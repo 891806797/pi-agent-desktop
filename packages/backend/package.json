@@ -1,0 +1,26 @@
+{
+	"name": "@pi-agent/backend",
+	"version": "0.1.0",
+	"type": "module",
+	"private": true,
+	"description": "Bun + ElysiaJS 后端（pi-coding-agent 单进程集成；SDK JSONL 历史与 Drizzle SQLite 运行恢复）",
+	"scripts": {
+		"dev": "bun run --hot src/index.ts",
+		"test": "bun test",
+		"db:generate": "drizzle-kit generate",
+		"db:check": "drizzle-kit check"
+	},
+	"dependencies": {
+		"@earendil-works/pi-agent-core": "^1.4.0",
+		"@earendil-works/pi-coding-agent": "^1.4.0",
+		"@pi-agent/common": "workspace:*",
+		"drizzle-orm": "0.45.4",
+		"elysia": "^1.4.30",
+		"jose": "^6.2.14",
+		"typebox": "^1.4.3",
+		"zod": "^4.6.7"
+	},
+	"devDependencies": {
+		"drizzle-kit": "0.31.11"
+	}
+}

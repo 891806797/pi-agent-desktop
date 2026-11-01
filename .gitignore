@@ -1,0 +1,39 @@
+# 依赖与构建产物（保留 bun.lock）
+node_modules/
+dist/
+bin/
+*.tsbuildinfo
+.vite/
+coverage/
+
+# 本地环境与凭据（示例配置可提交）
+.env
+.env.*
+!.env.example
+!.env.*.example
+/test-model.json
+
+# 运行数据与 SQLite 文件（不忽略 Drizzle 迁移）
+/data/
+/packages/backend/data/
+*.sqlite
+*.sqlite-*
+*.log
+
+# 开发工具的本地索引、会话和浏览器记录
+.codegraph/
+.omc/
+.playwright-mcp/
+.claude/settings.local.json
+.idea/
+
+# 本地参考源码与临时调试脚本
+/参考项目/
+/tmp-sse-probe.ts
+
+# Python 缓存与系统文件
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db
+Desktop.ini

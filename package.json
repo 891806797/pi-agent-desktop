@@ -1,0 +1,27 @@
+{
+	"name": "pi-agent",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "pi-agent workspace：backend (Bun+ElysiaJS+pi-coding-agent) + frontend (Vite+React19) + common (FE↔BE 契约)",
+	"workspaces": [
+		"packages/*"
+	],
+	"scripts": {
+		"dev:backend": "bun run --hot packages/backend/src/index.ts",
+		"dev:frontend": "cd packages/frontend && bun run dev",
+		"typecheck": "tsc --noEmit -p packages/common/tsconfig.json && tsc --noEmit -p packages/backend/tsconfig.json && tsc --noEmit -p packages/frontend/tsconfig.json",
+		"lint": "biome check .",
+		"lint:fix": "biome check --write .",
+		"test": "bun test packages/backend && bun run --cwd packages/frontend test",
+		"build": "bun run packages/backend/scripts/build.ts",
+		"build:win": "bun run packages/backend/scripts/build.ts --target=win",
+		"build:linux": "bun run packages/backend/scripts/build.ts --target=linux",
+		"build:mac": "bun run packages/backend/scripts/build.ts --target=mac"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.6.4",
+		"@types/bun": "^1.4.4",
+		"typescript": "^7.0.2"
+	}
+}

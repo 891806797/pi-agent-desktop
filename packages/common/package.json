@@ -1,0 +1,21 @@
+{
+	"name": "@pi-agent/common",
+	"version": "0.1.0",
+	"type": "module",
+	"private": true,
+	"description": "前后端共享契约：请求 Zod 单源、响应与渲染类型、事件协议；前端类型按 type-only 导入，协议常量与校验按需显式导入。",
+	"exports": {
+		".": "./src/index.ts",
+		"./sse-events": "./src/sse-events.ts",
+		"./messages": "./src/messages.ts",
+		"./dto": "./src/dto/index.ts",
+		"./dto/requests": "./src/dto/requests.ts",
+		"./dto/responses": "./src/dto/responses.ts"
+	},
+	"files": [
+		"src"
+	],
+	"dependencies": {
+		"zod": "^4.6.7"
+	}
+}
