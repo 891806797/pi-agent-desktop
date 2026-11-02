@@ -584,8 +584,15 @@ export class SessionRegistry {
 				ctx.closing = true;
 				ctx.ui?.dispose();
 				ctx.recovery?.suspend();
+				if (!ctx.recovery) ctx.session.dispose();
 			}
-			await Promise.all(contexts.map((ctx) => ctx.session.settingsManager.flush()));
+			// suspend 已保存检查点并 dispose/abort；等待原生工具退出后再关闭持久层。
+			await Promise.all(
+				contexts.map(async (ctx) => {
+					await ctx.session.agent.waitForIdle();
+					await ctx.session.settingsManager.flush();
+				}),
+			);
 			this.map.clear();
 		} else
 			await Promise.all([...this.map.values()].map((ctx) => this.close(ctx.sessionId, "shutdown")));

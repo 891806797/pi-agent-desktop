@@ -1,3 +1,4 @@
+import { desktopFetch, isDesktop } from "./desktop";
 /**
  * REST 客户端 —— 聊天页所有请求统一注入 x-session-id + x-workspace-dir（§5.10）。
  * 坐标从 URL query 读取，组件层不手工传。
@@ -79,7 +80,7 @@ async function request<T>(
 	const mutating = !!init?.method && init.method !== "GET";
 	if (mutating) pendingReads.clear();
 	try {
-		const res = await fetch(path, {
+		const res = await (isDesktop() ? desktopFetch : fetch)(path, {
 			...init,
 			headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
 			credentials: "same-origin",

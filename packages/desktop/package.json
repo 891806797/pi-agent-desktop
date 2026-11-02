@@ -1,0 +1,17 @@
+{
+	"name": "@pi-agent/desktop",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "bun run prepare:sidecar --frontend && bun run tauri dev",
+		"build": "bun run scripts/build.ts",
+		"tauri": "tauri",
+		"test": "bun test scripts",
+		"prepare:sidecar": "bun run scripts/prepare.ts",
+		"typecheck": "tsc --noEmit --types bun --module preserve --target esnext --skipLibCheck scripts/*.ts"
+	},
+	"devDependencies": {
+		"@tauri-apps/cli": "^2.12.4"
+	}
+}

@@ -1,0 +1,16 @@
+{
+  "identifier": "main",
+  "description": "Local application window and restricted backend bridge",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:event:default",
+    "allow-backend-request",
+    "allow-backend-subscribe",
+    "allow-backend-unsubscribe",
+    "allow-backend-status",
+    "allow-backend-restart",
+    "allow-backend-visibility"
+  ]
+}

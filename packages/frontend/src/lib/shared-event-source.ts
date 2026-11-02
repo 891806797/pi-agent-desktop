@@ -1,3 +1,5 @@
+import { isDesktop, openDesktopEventSource } from "./desktop";
+
 export interface EventSourceTransport {
 	addEventListener(name: string, handler: (event: Event) => void): void;
 	close(): void;
@@ -6,6 +8,7 @@ export interface EventSourceTransport {
 
 /** 相同会话/用户订阅跨标签页共享，给普通 HTTP 请求保留连接额度。 */
 export function openEventSource(url: string, names: readonly string[]): EventSourceTransport {
+	if (isDesktop()) return openDesktopEventSource(url);
 	if (typeof SharedWorker === "undefined") return new EventSource(url);
 	const worker = new SharedWorker(new URL("./sse-worker.ts", import.meta.url), {
 		type: "module",

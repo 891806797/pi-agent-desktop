@@ -2,9 +2,11 @@
 import { eq } from "drizzle-orm";
 import { withRuntimeDatabase } from "@/db";
 import { users } from "@/db/schema";
+import { env } from "@/env";
 import type { AuthUser } from "./token";
 
 export function ensureSeed(): void {
+	if (env.desktopToken !== undefined) return;
 	withRuntimeDatabase((db) =>
 		db.transaction(() => {
 			if (db.select().from(users).limit(1).get()) return;

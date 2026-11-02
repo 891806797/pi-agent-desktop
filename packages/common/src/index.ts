@@ -1,6 +1,7 @@
 /** @pi-agent/common — 前后端共享契约类型 barrel */
 
 export * from "./default-settings";
+export * from "./desktop";
 export * from "./dto";
 export * from "./extension-ui";
 export * from "./messages";

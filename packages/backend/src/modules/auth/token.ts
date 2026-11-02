@@ -2,7 +2,10 @@
  * JWT 认证 —— jose HS256，httpOnly cookie 携带（SSE 同源请求自动带）。
  */
 
+import { eq } from "drizzle-orm";
 import { jwtVerify, SignJWT } from "jose";
+import { withRuntimeDatabase } from "@/db";
+import { appMetadata } from "@/db/schema";
 import { env } from "@/env";
 
 export const AUTH_COOKIE = "pi_token";
@@ -11,7 +14,19 @@ let secretKey: Uint8Array | null = null;
 
 export function getJwtSecret(): Uint8Array {
 	if (secretKey === null) {
-		secretKey = new TextEncoder().encode(env.jwtSecret);
+		const secret =
+			env.jwtSecret ||
+			withRuntimeDatabase((db) =>
+				db.transaction(() => {
+					const key = "jwt_secret";
+					db.insert(appMetadata)
+						.values({ key, value: crypto.randomUUID() })
+						.onConflictDoNothing()
+						.run();
+					return db.select().from(appMetadata).where(eq(appMetadata.key, key)).get()!.value;
+				}),
+			);
+		secretKey = new TextEncoder().encode(secret);
 	}
 	return secretKey;
 }

@@ -1,0 +1,144 @@
+name: Desktop CI
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_call:
+    inputs:
+      ref:
+        required: false
+        type: string
+    secrets:
+      WINDOWS_CERTIFICATE:
+        required: false
+      WINDOWS_CERTIFICATE_PASSWORD:
+        required: false
+      APPLE_CERTIFICATE:
+        required: false
+      APPLE_CERTIFICATE_PASSWORD:
+        required: false
+      APPLE_SIGNING_IDENTITY:
+        required: false
+      APPLE_ID:
+        required: false
+      APPLE_PASSWORD:
+        required: false
+      APPLE_TEAM_ID:
+        required: false
+permissions:
+  contents: read
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    env:
+      TAURI_ENV_TARGET_TRIPLE: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: rustfmt, clippy
+      - name: Linux native dependencies (Ubuntu 22.04 baseline)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev librsvg2-dev libayatana-appindicator3-dev patchelf
+      - run: bun install --frozen-lockfile
+      - run: bun run --cwd packages/desktop typecheck
+      - run: bun run typecheck
+      - run: bun run lint
+      - run: bun test packages/backend
+      - run: bun run --cwd packages/frontend test
+      - name: Prepare sidecar for Rust compilation
+        run: bun run desktop:prepare --frontend --target ${{ matrix.target }}
+      - run: bun test packages/desktop/scripts
+      - run: cargo fmt --manifest-path packages/desktop/src-tauri/Cargo.toml --check
+      - run: cargo clippy --locked --manifest-path packages/desktop/src-tauri/Cargo.toml --target ${{ matrix.target }} --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path packages/desktop/src-tauri/Cargo.toml --target ${{ matrix.target }}
+      - name: Import optional Windows signing certificate (release only)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          PFX: ${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) && secrets.WINDOWS_CERTIFICATE || '' }}
+          PFX_PASSWORD: ${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) && secrets.WINDOWS_CERTIFICATE_PASSWORD || '' }}
+        run: |
+          if ($env:PFX) {
+            $certFile = Join-Path $env:RUNNER_TEMP 'pi-agent-signing.pfx'
+            try {
+              [IO.File]::WriteAllBytes($certFile, [Convert]::FromBase64String($env:PFX))
+              $password = ConvertTo-SecureString -String $env:PFX_PASSWORD -AsPlainText -Force
+              $cert = Import-PfxCertificate -FilePath $certFile -CertStoreLocation Cert:\CurrentUser\My -Password $password
+              "WINDOWS_CERTIFICATE_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append
+            } finally { Remove-Item -LiteralPath $certFile -Force -ErrorAction SilentlyContinue }
+          }
+      - name: Import optional macOS signing certificate (release only)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+        run: |
+          if [ -n "$APPLE_CERTIFICATE" ]; then
+            cert_file="$RUNNER_TEMP/pi-agent-signing.p12"
+            keychain_file="$RUNNER_TEMP/pi-agent-signing.keychain-db"
+            keychain_password="$(openssl rand -base64 32)"
+            trap 'rm -f "$cert_file"' EXIT
+            printf '%s' "$APPLE_CERTIFICATE" | base64 -D > "$cert_file"
+            security create-keychain -p "$keychain_password" "$keychain_file"
+            security set-keychain-settings -lut 21600 "$keychain_file"
+            security unlock-keychain -p "$keychain_password" "$keychain_file"
+            security import "$cert_file" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_file"
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain_file"
+            security list-keychains -d user -s "$keychain_file" "$HOME/Library/Keychains/login.keychain-db"
+          fi
+      - name: Build native installers
+        run: bun run desktop:build --prepared --target ${{ matrix.target }}
+        env:
+          APPLE_CERTIFICATE: ${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) && secrets.APPLE_TEAM_ID || '' }}
+      - name: Remove optional Windows signing certificate
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if ($env:WINDOWS_CERTIFICATE_THUMBPRINT) {
+            Remove-Item -LiteralPath "Cert:\CurrentUser\My\$env:WINDOWS_CERTIFICATE_THUMBPRINT" -Force -ErrorAction SilentlyContinue
+          }
+      - name: Remove optional macOS signing keychain
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: |
+          keychain_file="$RUNNER_TEMP/pi-agent-signing.keychain-db"
+          if [ -f "$keychain_file" ]; then security delete-keychain "$keychain_file"; fi
+      - name: Smoke real installer payload in isolated Unicode directory
+        run: bun run packages/desktop/scripts/verify-release.ts --bundle packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.target }}
+          if-no-files-found: error
+          path: |
+            packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
+            packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
+            packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
+            packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.deb
+            packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
+

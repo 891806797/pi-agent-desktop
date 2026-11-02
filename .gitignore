@@ -37,3 +37,8 @@ __pycache__/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Tauri 编译和生成资源（提交 Cargo.lock）
+/packages/desktop/src-tauri/target/
+/packages/desktop/src-tauri/binaries/
+/packages/desktop/src-tauri/resources/

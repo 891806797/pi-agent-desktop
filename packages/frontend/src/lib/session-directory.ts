@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { useChatStore } from "@/stores/chat";
 import { useSessionsStore } from "@/stores/sessions";
 import { listCatalog } from "./api";
+import { isDesktop, isPageVisible } from "./desktop";
 import { type EventSourceTransport, openEventSource } from "./shared-event-source";
 
 /** 独立于聊天坐标，注销后所有异步回调作废。 */
@@ -23,7 +24,7 @@ export class SessionDirectory {
 			const snapshot = await listCatalog();
 			if (!current()) return;
 			useSessionsStore.getState().load(snapshot);
-			if (typeof SharedWorker === "undefined") {
+			if (!isDesktop() && typeof SharedWorker === "undefined") {
 				this.timer = setTimeout(() => {
 					void this.start();
 				}, 2000);
@@ -71,7 +72,7 @@ export class SessionDirectory {
 								frame.data.noticeKind === "notification" &&
 								useChatStore.getState().sessionId === frame.data.sessionId
 							) &&
-							document.visibilityState === "visible"
+							isPageVisible()
 						) {
 							const label =
 								frame.data.noticeKind === "failed"

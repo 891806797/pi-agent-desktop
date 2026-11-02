@@ -1,0 +1,80 @@
+name: Desktop release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag, for example v0.1.0
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: desktop-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  version:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Require matching immutable release tag
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)"
+          bun -e 'import { verifyVersions } from "./packages/desktop/scripts/prepare.ts"; await verifyVersions(process.env.RELEASE_TAG);'
+  build:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ inputs.tag || github.ref_name }}
+    secrets: inherit
+  publish:
+    needs: [version, build]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: release-assets
+      - name: Require four target artifacts and write checksums
+        shell: bash
+        run: |
+          test "$(find release-assets -mindepth 1 -maxdepth 1 -type d | wc -l)" = 4
+          mkdir assets
+          find release-assets -type f -exec cp {} assets/ \;
+          cd assets
+          sha256sum * > SHA256SUMS
+      - name: Publish only after every target passed
+        shell: bash
+        run: |
+          cat > notes.md <<'NOTES'
+          First desktop preview for Windows x64, macOS Apple Silicon / Intel, Linux x64 (Ubuntu 22.04 baseline).
+
+          Unsigned preview: macOS notarization and Windows code signing are not guaranteed. No automatic updater. Download the installer matching your CPU and verify it against SHA256SUMS.
+
+          CI checks native compilation, Rust/TypeScript tests and extracted installer sidecar authentication, lifecycle and Photon WASM image resizing. Interactive GUI, notifications and OS permission dialogs still require manual platform acceptance; CI success does not certify those flows.
+          NOTES
+          if ! gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --draft --prerelease --title "Pi Agent $RELEASE_TAG (desktop preview)" --notes-file notes.md
+          fi
+          gh release upload "$RELEASE_TAG" assets/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease --notes-file notes.md
+
+

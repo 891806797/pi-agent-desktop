@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { RequireAnon, RequireAuth } from "@/components/auth/RequireAuth";
+import { DesktopEventListener } from "@/components/DesktopBoundary";
 import { useSessionDirectory } from "@/hooks/useSessionDirectory";
 import { ChatPage } from "@/pages/ChatPage";
 import { LoginPage } from "@/pages/LoginPage";
@@ -9,6 +10,7 @@ export function App() {
 	useSessionDirectory();
 	return (
 		<BrowserRouter>
+			<DesktopEventListener />
 			<Routes>
 				<Route
 					path="/login"

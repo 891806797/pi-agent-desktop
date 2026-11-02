@@ -14,13 +14,25 @@ writeFileSync(
 	join(workspaces[0]!, "long.txt"),
 	`${Array.from({ length: 190 }, (_, index) => `line ${index + 1}: native pi tool output`).join("\n")}\nWEB_TOOL_OUTPUT_TAIL`,
 );
+writeFileSync(
+	join(workspaces[0]!, "native-long-tool.ts"),
+	`
+const child = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { stdout: "ignore", stderr: "ignore", stdin: "ignore" });
+await Bun.write("native-tool-pids.json", JSON.stringify([process.pid, child.pid]));
+console.log("NATIVE_TOOL_STARTED");
+await Bun.sleep(120000);
+`,
+);
 const dataDir = join(root, "data");
 const releases = new Set<() => void>();
 const provider = Bun.serve({
 	port: 0,
 	hostname: "127.0.0.1",
 	async fetch(request) {
-		const body = (await request.json()) as { messages: Array<{ role: string; content: unknown }> };
+		const body = (await request.json()) as {
+			messages: Array<{ role: string; content: unknown }>;
+			tools?: Array<{ function: { name: string } }>;
+		};
 		const lastUser = body.messages.findLastIndex((message) => message.role === "user");
 		const userContent = body.messages[lastUser]?.content;
 		const text =
@@ -38,38 +50,44 @@ const provider = Bun.serve({
 				{ error: { message: "browser fixture failure", type: "invalid_request_error" } },
 				{ status: 400 },
 			);
+		const nativeShell = body.tools?.some((tool) => tool.function.name === "powershell")
+			? "powershell"
+			: "bash";
+		const nativeCommand = `${nativeShell === "powershell" ? "& " : ""}${JSON.stringify(process.execPath.replaceAll("\\", "/"))} ${JSON.stringify(join(workspaces[0]!, "native-long-tool.ts").replaceAll("\\", "/"))}`;
 		const tool =
-			!afterTool && text === "browser-permission"
-				? {
-						name: "write",
-						arguments: JSON.stringify({ path: "browser.txt", content: "browser fixture" }),
-					}
-				: !afterTool && (text === "browser-question" || text === "browser-question-long")
+			!afterTool && text === "browser-native-long-tool"
+				? { name: nativeShell, arguments: JSON.stringify({ command: nativeCommand }) }
+				: !afterTool && text === "browser-permission"
 					? {
-							name: "ask_user_question",
-							arguments: JSON.stringify({
-								questions: Array.from(
-									{ length: text === "browser-question-long" ? 8 : 1 },
-									(_, index) => ({
-										question:
-											text === "browser-question-long"
-												? `长问卷问题 ${index + 1}`
-												: "浏览器验收选择",
-										options:
-											text === "browser-question-long"
-												? Array.from({ length: 40 }, (_, option) => ({
-														label: `选项 ${option + 1}`,
-														description: "用于验证问卷内容滚动，标题和操作按钮保持固定。",
-													}))
-												: [{ label: "继续验收" }],
-										allowCustom: false,
-									}),
-								),
-							}),
+							name: "write",
+							arguments: JSON.stringify({ path: "browser.txt", content: "browser fixture" }),
 						}
-					: !afterTool && text === "browser-long-read"
-						? { name: "read", arguments: JSON.stringify({ path: "long.txt" }) }
-						: null;
+					: !afterTool && (text === "browser-question" || text === "browser-question-long")
+						? {
+								name: "ask_user_question",
+								arguments: JSON.stringify({
+									questions: Array.from(
+										{ length: text === "browser-question-long" ? 8 : 1 },
+										(_, index) => ({
+											question:
+												text === "browser-question-long"
+													? `长问卷问题 ${index + 1}`
+													: "浏览器验收选择",
+											options:
+												text === "browser-question-long"
+													? Array.from({ length: 40 }, (_, option) => ({
+															label: `选项 ${option + 1}`,
+															description: "用于验证问卷内容滚动，标题和操作按钮保持固定。",
+														}))
+													: [{ label: "继续验收" }],
+											allowCustom: false,
+										}),
+									),
+								}),
+							}
+						: !afterTool && text === "browser-long-read"
+							? { name: "read", arguments: JSON.stringify({ path: "long.txt" }) }
+							: null;
 		const streaming = text === "browser-thinking";
 		const heldPermission = !afterTool && text === "browser-permission";
 		return new Response(
