@@ -75,9 +75,9 @@ export function PermissionRequest({
 		}
 	};
 	return (
-		<fieldset disabled={busy} className="min-w-0 border-0 p-0">
+		<fieldset disabled={busy} className="flex min-h-0 min-w-0 flex-col border-0 p-0">
 			{request.expiresAt !== undefined && (
-				<p className="mx-4 mt-2 text-xs text-[var(--text-muted)]">
+				<p className="mx-4 mt-2 shrink-0 text-xs text-[var(--text-muted)]">
 					本次请求截止时间：
 					<time dateTime={new Date(request.expiresAt).toISOString()}>
 						{new Date(request.expiresAt).toLocaleTimeString()}
@@ -94,7 +94,7 @@ export function PermissionRequest({
 			{error && (
 				<p
 					role="alert"
-					className="mx-4 whitespace-pre-wrap break-words text-xs text-[var(--danger-text)]"
+					className="mx-4 shrink-0 whitespace-pre-wrap break-words text-xs text-[var(--danger-text)]"
 				>
 					{error}
 				</p>

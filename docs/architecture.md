@@ -2,6 +2,12 @@
 
 本项目定位为可复用的智能体底座模板，以 `prompt.md` 为功能范围：多人会话、多页面镜像、审批与提问、动态模型/思考/模式、输入队列、命令和文件引用。保留三包结构；开发阶段不提供旧实现的数据导入和兼容层，不夹带具体业务适配。
 
+## Pi SDK 接入
+
+当前接入 `pi-coding-agent`、`pi-agent-core`、`pi-ai` 1.5.0，依赖通过 Bun 安装并由 `bun.lock` 锁定。自定义提问工具使用同版本 `pi-schema` 定义 JSON Schema；参数转换和校验由 SDK 执行，Web 不重复解析或修补模型参数。增量工具参数直接消费 SDK 事件，执行及恢复继续使用公开的 `AgentSession`、`runToolCall` 接口，不保留 1.4 分支。
+
+本次升级不改变 SQLite 表及 SDK JSONL 存储，也未引入实验性的 Pi Durable。运行恢复仍由现有检查点负责；编译版浏览器验收使用真实 SDK 和本机 Provider，覆盖分片工具参数、审批重启、队列与多页同步。`browser_question_acceptance.py` 补充桌面和窄屏长问卷提交及滚动边界，`browser_scroll_acceptance.py` 验证流式跟随与用户上翻暂停。
+
 ## 后端
 
 依赖方向：`routes → modules → core/env/common`。`core` 不依赖业务模块；`modules` 不依赖 Elysia 或路由。模块之间直接调用明确的能力，不增设单实现接口和转发层。
@@ -104,7 +110,7 @@ editor 沿用共享审批，一页结算全页关闭，各页编辑草稿互不�
 
 `packages/frontend/test/browser_acceptance.py` 使用已安装的 Python Playwright 和编译版进行真实无头 Chromium 验收：登录、三个标签页、后台审批后返回重放、强制重启恢复权限及提问的原卡片与截止时间、一页结算全页清卡、思考中切页及队列菜单；另验收原生命令、工具换行和完整尾部、键盘、窄屏导航、顶部 TUI 统计及压缩/刷新。数据与工作区均为临时目录，Provider 只监听本机；子服务首次使用系统分配端口，重启复用已确认的子进程端口，必须读到成功绑定日志后才测试。
 
-Windows 示例（先构建前端与编译版）：`python packages/frontend/test/browser_acceptance.py <exe绝对路径> <bun.exe绝对路径> [chromium绝对路径]`。五分钟规则用可控假时钟验证，浏览器验收不实际等待五分钟；未验证真实外部 Provider 成功响应及 Linux/macOS 运行。
+Windows 示例（先构建前端与编译版）：`python packages/frontend/test/browser_acceptance.py <exe绝对路径> <bun.exe绝对路径> [chromium绝对路径]`。五分钟规则用可控假时钟验证，浏览器验收不实际等待五分钟。2026-11-02 的 1.5 升级验收另使用当时配置的 `zhipu · glm-5.3` 和 `zhipu · glm-5.3-flash`，在隔离数据与工作区完成真实提问工具、审批回答及后续模型回复；未验证其他外部 Provider 及 Linux/macOS 运行。
 
 
 ## 模型表单、主题与滚动

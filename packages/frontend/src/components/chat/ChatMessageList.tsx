@@ -120,7 +120,13 @@ export function ChatMessageList({ agent }: ChatMessageListProps): React.JSX.Elem
 			</div>
 
 			{approvalRequests.length > 0 && (
-				<div className="shrink-0 max-h-[60vh] overflow-auto">
+				<div
+					className={
+						approvalRequests.some((request) => request.kind === "ask_question")
+							? "flex min-h-0 max-h-[70%] shrink-0 flex-col overflow-hidden"
+							: "shrink-0 max-h-[60vh] overflow-auto"
+					}
+				>
 					{approvalRequests
 						.filter((r) => !(issue?.kind === "uncertain" && r.requestId === issue.issueId))
 						.map((r) => (

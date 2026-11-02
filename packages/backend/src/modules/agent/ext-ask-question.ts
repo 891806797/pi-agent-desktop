@@ -7,25 +7,24 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { AskQuestion } from "@pi-agent/common";
-import { Type } from "typebox";
+import { arr, bool, obj, opt, type Static, str } from "@earendil-works/pi-schema";
 import { type ApprovalManager, USER_APPROVAL_TIMEOUT_MS } from "./approval-manager";
 
-const AskQuestionParams = Type.Object({
-	questions: Type.Array(
-		Type.Object({
-			question: Type.String({ minLength: 1, description: "要向用户提出的问题" }),
-			options: Type.Array(
-				Type.Object({
-					label: Type.String({ description: "选项显示文本" }),
-					description: Type.Optional(Type.String({ description: "选项补充说明" })),
+const AskQuestionParams = obj({
+	questions: arr(
+		obj({
+			question: str({ minLength: 1, description: "要向用户提出的问题" }),
+			options: arr(
+				obj({
+					label: str({ description: "选项显示文本" }),
+					description: opt(str({ description: "选项补充说明" })),
 				}),
 				{ description: "候选项列表" },
 			),
-			multiSelect: Type.Optional(Type.Boolean({ description: "允许多选" })),
-			allowCustom: Type.Optional(Type.Boolean({ description: "允许自由输入（Other）" })),
-			notes: Type.Optional(Type.String({ description: "展示在问题下方的提示" })),
-			required: Type.Optional(Type.Boolean({ description: "是否必答，默认 true" })),
+			multiSelect: opt(bool({ description: "允许多选" })),
+			allowCustom: opt(bool({ description: "允许自由输入（Other）" })),
+			notes: opt(str({ description: "展示在问题下方的提示" })),
+			required: opt(bool({ description: "是否必答，默认 true" })),
 		}),
 		{ minItems: 1, description: "要提出的问题列表，问题标题不可重复" },
 	),
@@ -40,7 +39,7 @@ export function makeAskQuestionExt(approvals: ApprovalManager): (pi: ExtensionAP
 				"向用户提出一个或多个选择题并等待回答。当你需要用户输入（澄清需求、二选一方案、收集偏好）才能继续时必须调用此工具，不要自行猜测。一次调用可含多个问题，用户会一次性作答。",
 			parameters: AskQuestionParams,
 			async execute(toolCallId, params, signal) {
-				const questions = (params as { questions: AskQuestion[] }).questions;
+				const { questions } = params as Static<typeof AskQuestionParams>;
 				if (
 					questions.length === 0 ||
 					questions.some((q) => !q.question.trim()) ||

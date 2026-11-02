@@ -11,14 +11,14 @@
 		"db:check": "drizzle-kit check"
 	},
 	"dependencies": {
-		"@earendil-works/pi-agent-core": "^1.4.0",
-		"@earendil-works/pi-ai": "^1.4.0",
-		"@earendil-works/pi-coding-agent": "^1.4.0",
+		"@earendil-works/pi-agent-core": "^1.5.0",
+		"@earendil-works/pi-ai": "^1.5.0",
+		"@earendil-works/pi-coding-agent": "^1.5.0",
+		"@earendil-works/pi-schema": "^1.5.0",
 		"@pi-agent/common": "workspace:*",
 		"drizzle-orm": "0.45.4",
 		"elysia": "^1.4.30",
 		"jose": "^6.2.14",
-		"typebox": "^1.4.3",
 		"zod": "^4.6.7"
 	},
 	"devDependencies": {

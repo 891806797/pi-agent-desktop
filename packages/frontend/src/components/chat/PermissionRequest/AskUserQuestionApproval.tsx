@@ -11,12 +11,12 @@ import type { OnApprove } from "./ApprovalShell";
 const OTHER_VALUE = "__other__";
 
 /** dock 容器：bg-layer-01 / border-base，header/content/footer 用细分隔。
- *  flex column + max-h：header/footer 固定，content 区独立滚动。 */
+ *  外层受聊天区 70% 高度约束，header/footer 固定，只有 content 区滚动。 */
 const DOCK =
-	"mx-4 my-2 rounded-lg border border-[var(--border-base)] bg-[var(--bg-layer-01)] shadow-[var(--elevation-raised)] overflow-hidden flex flex-col max-h-[60vh]";
+	"mx-4 my-2 rounded-lg border border-[var(--border-base)] bg-[var(--bg-layer-01)] shadow-[var(--elevation-raised)] overflow-hidden flex min-h-0 flex-col max-h-[70dvh]";
 const DOCK_HEADER =
 	"flex items-center justify-between gap-3 px-4 py-2.5 border-b border-[var(--border-muted)] shrink-0";
-const DOCK_CONTENT = "flex-1 min-h-0 overflow-y-auto px-4 py-3";
+const DOCK_CONTENT = "flex-1 min-h-0 overflow-y-auto overscroll-y-contain px-4 py-3";
 const DOCK_FOOTER =
 	"flex items-center gap-2 px-4 py-2.5 border-t border-[var(--border-muted)] shrink-0";
 

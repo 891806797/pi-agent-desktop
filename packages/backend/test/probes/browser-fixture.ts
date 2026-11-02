@@ -44,17 +44,27 @@ const provider = Bun.serve({
 						name: "write",
 						arguments: JSON.stringify({ path: "browser.txt", content: "browser fixture" }),
 					}
-				: !afterTool && text === "browser-question"
+				: !afterTool && (text === "browser-question" || text === "browser-question-long")
 					? {
 							name: "ask_user_question",
 							arguments: JSON.stringify({
-								questions: [
-									{
-										question: "浏览器验收选择",
-										options: [{ label: "继续验收" }],
+								questions: Array.from(
+									{ length: text === "browser-question-long" ? 8 : 1 },
+									(_, index) => ({
+										question:
+											text === "browser-question-long"
+												? `长问卷问题 ${index + 1}`
+												: "浏览器验收选择",
+										options:
+											text === "browser-question-long"
+												? Array.from({ length: 40 }, (_, option) => ({
+														label: `选项 ${option + 1}`,
+														description: "用于验证问卷内容滚动，标题和操作按钮保持固定。",
+													}))
+												: [{ label: "继续验收" }],
 										allowCustom: false,
-									},
-								],
+									}),
+								),
 							}),
 						}
 					: !afterTool && text === "browser-long-read"
@@ -78,14 +88,30 @@ const provider = Bun.serve({
 								releases.add(resolve);
 							});
 						}
-						if (tool)
+						if (tool) {
 							emit({
 								role: "assistant",
 								tool_calls: [
-									{ index: 0, id: `browser_${tool.name}`, type: "function", function: tool },
+									{
+										index: 0,
+										id: `browser_${tool.name}`,
+										type: "function",
+										function: { name: tool.name, arguments: "" },
+									},
 								],
 							});
-						else if (text === "browser-scroll") {
+							// 穿过真实 SDK 的增量解析与 SSE 桥；分片覆盖中文、JSON 转义和长问卷。
+							for (let offset = 0; offset < tool.arguments.length; offset += 17) {
+								emit({
+									tool_calls: [
+										{
+											index: 0,
+											function: { arguments: tool.arguments.slice(offset, offset + 17) },
+										},
+									],
+								});
+							}
+						} else if (text === "browser-scroll") {
 							emit({
 								role: "assistant",
 								content: Array.from(

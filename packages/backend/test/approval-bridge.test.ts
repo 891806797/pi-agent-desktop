@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { validateToolArguments } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ApprovalManager } from "../src/modules/agent/approval-manager";
 import { judgeToolCall } from "../src/modules/agent/dangerous-commands";
@@ -18,6 +19,72 @@ function setup() {
 }
 
 describe("Web approval bridges", () => {
+	test("native tool validation normalizes model arguments without changing the original call", () => {
+		const { tool } = setup();
+		const argumentsFromModel = {
+			questions: {
+				question: "which?",
+				options: { label: "continue" },
+				multiSelect: "false",
+				allowCustom: "true",
+			},
+		};
+		expect(
+			validateToolArguments(tool, {
+				type: "toolCall",
+				id: "normalized",
+				name: tool.name,
+				arguments: argumentsFromModel,
+			}),
+		).toEqual({
+			questions: [
+				{
+					question: "which?",
+					options: [{ label: "continue" }],
+					multiSelect: false,
+					allowCustom: true,
+				},
+			],
+		});
+		expect(argumentsFromModel.questions.multiSelect).toBe("false");
+		expect(argumentsFromModel.questions.options).toEqual({ label: "continue" });
+		expect(
+			validateToolArguments(tool, {
+				type: "toolCall",
+				id: "optional-null",
+				name: tool.name,
+				arguments: {
+					questions: [
+						{
+							question: "which?",
+							options: [{ label: "continue", description: null }],
+							notes: null,
+						},
+					],
+				},
+			}),
+		).toEqual({ questions: [{ question: "which?", options: [{ label: "continue" }] }] });
+	});
+
+	test("native tool validation rejects unknown fields and malformed questions before approval", () => {
+		const { approvals, tool } = setup();
+		for (const args of [
+			{ questions: [{ question: "which?", options: [], unexpected: true }] },
+			{ questions: [] },
+			{ questions: [{ options: [] }] },
+		]) {
+			expect(() =>
+				validateToolArguments(tool, {
+					type: "toolCall",
+					id: "invalid",
+					name: tool.name,
+					arguments: args,
+				}),
+			).toThrow();
+		}
+		expect(approvals.pendingList()).toEqual([]);
+	});
+
 	test("confirm accepts the same allow action used by REST permissions", async () => {
 		const { approvals } = setup();
 		const answer = makeWebUIContext(approvals).confirm("title", "message");
