@@ -1,5 +1,6 @@
 @import 'tailwindcss';
 @import './base.css';
+@import './themes.css';
 
 @layer base {
   :root {
@@ -30,32 +31,6 @@
     --radius: 0.5rem;
   }
 
-  .dark {
-    --background: 30 15% 10%;
-    --foreground: 40 25% 90%;
-    --card: 30 13% 12%;
-    --card-foreground: 40 25% 90%;
-    --popover: 30 13% 12%;
-    --popover-foreground: 40 25% 90%;
-    --primary: 35 40% 55%;
-    --primary-foreground: 30 30% 12%;
-    --secondary: 30 10% 18%;
-    --secondary-foreground: 40 25% 90%;
-    --muted: 30 10% 17%;
-    --muted-foreground: 38 12% 62%;
-    --accent: 33 18% 20%;
-    --accent-foreground: 40 25% 90%;
-    --destructive: 0 60% 45%;
-    --destructive-foreground: 40 40% 95%;
-    --border: 30 12% 20%;
-    --input: 30 12% 20%;
-    --ring: 35 40% 50%;
-    --chart-1: 24 70% 55%;
-    --chart-2: 35 45% 50%;
-    --chart-3: 18 60% 48%;
-    --chart-4: 42 60% 60%;
-    --chart-5: 30 50% 45%;
-  }
 }
 
 /**

@@ -35,6 +35,7 @@ interface Entry {
 }
 
 export interface ApprovalOptions {
+	origin?: PendingRequest["origin"];
 	signal?: AbortSignal;
 	timeout?: number;
 	onTimeout?: () => ApprovalOutcome;
@@ -98,6 +99,7 @@ export class ApprovalManager {
 		if (saved?.outcome) return Promise.resolve(approvalValue(kind, saved.outcome));
 		const createdAt = Date.now();
 		const request: PendingRequest = saved?.request ?? {
+			...(options.origin ? { origin: options.origin } : {}),
 			requestId: id,
 			kind,
 			payload,
@@ -161,7 +163,8 @@ export class ApprovalManager {
 	settle(id: string, outcome: ApprovalOutcome): boolean {
 		const entry = this.entries.get(id);
 		if (!entry || entry.settled) return false;
-		this.persistence?.write(entry.request, outcome);
+		if (!isDeepStrictEqual(this.persistence?.find(id)?.outcome, outcome))
+			this.persistence?.write(entry.request, outcome);
 		entry.settled = true;
 		entry.cleanup();
 		this.entries.delete(id);

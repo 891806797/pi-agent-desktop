@@ -287,4 +287,15 @@ describe("queue immediate dispatch", () => {
 		await dispatchQueuedMessage(f.ctx, input(f.ctx, "followUp", 0, "steer"));
 		expect(f.started).toHaveLength(1);
 	});
+	test("queued immediate-send cannot bypass an unresolved unknown tool result", async () => {
+		const f = fixture();
+		await sendMessage(f.ctx, { text: "selected" });
+		f.ctx.recovery = { blocked: true } as SessionContext["recovery"];
+		await expect(dispatchQueuedMessage(f.ctx, input(f.ctx, "followUp", 0, "stop"))).rejects.toThrow(
+			"先核对",
+		);
+		expect(f.counts().abortCount).toBe(0);
+		expect(f.started).toHaveLength(0);
+		expect(queueSnapshot(f.ctx).followUp).toEqual(["selected"]);
+	});
 });

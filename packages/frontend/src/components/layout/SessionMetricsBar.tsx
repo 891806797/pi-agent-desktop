@@ -17,9 +17,9 @@ export function SessionMetricsBar({
 				: "尚无可用的上下文估算";
 	const contextColor =
 		percent != null && percent > 90
-			? "text-red-600"
+			? "text-[var(--danger-text)]"
 			: percent != null && percent > 70
-				? "text-amber-700"
+				? "text-[var(--warning-text)]"
 				: "text-[var(--text-base)]";
 	return (
 		<dl

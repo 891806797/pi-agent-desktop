@@ -174,6 +174,13 @@ export function retainSessionInputs(
 	publishSnapshot(ctx);
 }
 
+/** 执行恢复前移交给检查点重建，避免宿主待恢复队列重复入 SDK。 */
+export function releaseRetainedInputs(ctx: SessionContext): void {
+	const state = stateFor(ctx);
+	if (recoveryCount(state)) state.revision++;
+	state.recovery = { steer: [], followUp: [] };
+}
+
 function recoveryCount(state: QueueState): number {
 	return state.recovery.steer.length + state.recovery.followUp.length;
 }
@@ -280,6 +287,7 @@ export async function editSessionQueue(
 	};
 	try {
 		await restore(desired);
+		if (!targetBehavior && selected.id) ctx.recovery?.rejectInput(selected.id);
 	} catch (error) {
 		// 消费后回滚会重复提交已执行输入；保留 SDK 当前队列并明确告知调用方。
 		if (ctx.closing) throw error;
@@ -317,6 +325,8 @@ export function dispatchQueuedMessage(
 		return existing.result;
 	}
 	const result = queueTransaction(ctx, async () => {
+		if (ctx.recovery?.blocked)
+			throw new AppError("SESSION_BUSY", "请先核对未知操作的实际结果，再继续或放弃本轮");
 		sync(state, ctx.session.getSteeringMessages(), ctx.session.getFollowUpMessages());
 		if (ctx.closing || ctx.session.isCompacting || ctx.session.isBashRunning)
 			throw new AppError("SESSION_BUSY", "当前会话正在关闭、压缩或执行独立命令，请稍后重试");
@@ -354,6 +364,7 @@ export function dispatchQueuedMessage(
 		state.recovery = saved;
 		publishSnapshot(ctx);
 		ctx.recovery?.cancel();
+		ctx.interrupted = true;
 		ctx.approvals.rejectAll("停止当前运行后发送队列消息");
 		try {
 			await ctx.session.abort();

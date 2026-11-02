@@ -5,6 +5,8 @@
  */
 
 import { z } from "zod";
+import { RunModeSchema, ThinkingLevelSchema } from "../default-settings";
+import { ProviderConfigSchema } from "../model-settings";
 
 // ===== 通用 =====
 
@@ -41,8 +43,25 @@ export type CreateSessionInput = z.infer<typeof CreateSessionInput>;
 
 export const ListSessionsQuery = z.object({
 	workspace: WORKSPACE_B64.optional(),
+	q: z.string().max(200).optional(),
+	archived: z.enum(["true", "false"]).optional(),
+	cursor: z.string().max(4000).optional(),
+	limit: z.coerce.number().int().min(1).max(100).optional(),
 });
 export type ListSessionsQuery = z.infer<typeof ListSessionsQuery>;
+
+export const UpdateSessionInput = z
+	.object({
+		expectedRevision: z.int().min(1),
+		name: z.string().trim().min(1).max(100).optional(),
+		archived: z.boolean().optional(),
+	})
+	.refine((value) => value.name !== undefined || value.archived !== undefined, "未指定修改内容");
+export const DeleteSessionInput = z.object({
+	expectedRevision: z.int().min(0),
+	stopIfRunning: z.boolean().default(false),
+});
+export const ReadSessionInput = z.object({ noticeVersion: z.int().min(0) });
 
 // ===== agent：消息与队列 =====
 
@@ -104,12 +123,12 @@ export const SetModelInput = z.object({
 export type SetModelInput = z.infer<typeof SetModelInput>;
 
 export const SetThinkingInput = z.object({
-	level: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]),
+	level: ThinkingLevelSchema,
 });
 export type SetThinkingInput = z.infer<typeof SetThinkingInput>;
 
 export const SetRunModeInput = z.object({
-	mode: z.enum(["auto", "standard", "safe", "plan"]),
+	mode: RunModeSchema,
 });
 export type SetRunModeInput = z.infer<typeof SetRunModeInput>;
 
@@ -128,21 +147,7 @@ export type ListDirectoriesQuery = z.infer<typeof ListDirectoriesQuery>;
 
 export const ModelSettingsInput = z
 	.object({
-		providers: z.record(
-			z.string(),
-			z
-				.object({
-					apiKey: z.string().min(1).optional(),
-					api: z.string().min(1).optional(),
-					baseUrl: z.url().optional(),
-					models: z
-						.array(
-							z.object({ id: z.string().min(1), reasoning: z.boolean().optional() }).passthrough(),
-						)
-						.optional(),
-				})
-				.passthrough(),
-		),
+		providers: z.record(z.string().trim().min(1, "请输入 Provider 标识"), ProviderConfigSchema),
 	})
 	.passthrough()
 	.superRefine((config, ctx) => {

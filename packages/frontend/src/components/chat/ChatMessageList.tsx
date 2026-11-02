@@ -1,12 +1,16 @@
 import type { AgentStatus, AssistantBlock, ChatMessage } from "@pi-agent/common";
+import { cacheHitRate } from "@pi-agent/common";
 import { ArchiveIcon, ArrowDownIcon, ChevronRightIcon, Loader } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { QueueBar } from "@/components/input/QueueBar";
+import { useChatScroll } from "@/hooks/useChatScroll";
 import type { Attachment, ChatAgentApi } from "@/lib/agent-types";
-import { formatTokens } from "@/lib/format";
+import { beijingFormat, formatTokens, messageTime } from "@/lib/format";
+import { useChatStore } from "@/stores/chat";
 import { ChatInput } from "./chat-input";
+import { ExtensionPanel } from "./ExtensionPanel";
 import { Markdown } from "./Markdown";
 import { PermissionRequest } from "./PermissionRequest";
+import { RecoveryNotice } from "./RecoveryNotice";
 import { ToolResultRenderer } from "./tool-results";
 import { GUTTER, GUTTER_TEXT } from "./tool-results/shared";
 
@@ -14,17 +18,9 @@ interface ChatMessageListProps {
 	agent: ChatAgentApi;
 }
 
-/** 距底部小于该值视为“在底部”，继续自动追随 */
-const SCROLL_BOTTOM_THRESHOLD = 60;
-
 export function ChatMessageList({ agent }: ChatMessageListProps): React.JSX.Element {
-	const listRef = useRef<HTMLDivElement>(null);
-	/** 内容容器（消息列表根），ResizeObserver 监听它的高度变化以同步追随 */
-	const contentRef = useRef<HTMLDivElement>(null);
-	/** 是否粘底追随。比 state 更新的即时副本，供 ResizeObserver 回调同步读取 */
-	const stickRef = useRef(true);
-	const prevSessionId = useRef<string | null>(agent.sessionId);
-	const [atBottom, setAtBottom] = useState(true);
+	const issue = useChatStore((state) => state.issue);
+	const ui = useChatStore((state) => state.ui);
 
 	const {
 		messages,
@@ -41,83 +37,39 @@ export function ChatMessageList({ agent }: ChatMessageListProps): React.JSX.Elem
 	} = agent;
 	const hasMessages = messages.length > 0;
 
-	// 同步滚动到底（直接赋值 scrollTop，绕过 CSS scroll-behavior，避免流式抖动）
-	const scrollToBottom = useCallback((): void => {
-		const el = listRef.current;
-		if (!el) return;
-		el.scrollTop = el.scrollHeight;
-	}, []);
-
-	// 用户滚动 → 更新粘底状态（同时驱动“回到底部”按钮显隐）
-	const handleScroll = useCallback((): void => {
-		const el = listRef.current;
-		if (!el) return;
-		const next = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_BOTTOM_THRESHOLD;
-		stickRef.current = next;
-		setAtBottom((prev) => (prev === next ? prev : next));
-	}, []);
-
-	// 切换会话 → 强制粘底
-	useEffect(() => {
-		if (agent.sessionId === prevSessionId.current) return;
-		prevSessionId.current = agent.sessionId;
-		stickRef.current = true;
-		setAtBottom(true);
-		// messages 异步加载，rAF 兜底滚两次（覆盖 markdown/代码块异步撑高的二次布局）
-		requestAnimationFrame(() => {
-			scrollToBottom();
-			requestAnimationFrame(scrollToBottom);
-		});
-	}, [agent.sessionId, scrollToBottom]);
-
-	// ResizeObserver：粘底时内容高度增长 → layout 后 paint 前同步推 scrollTop 到底，避免抖动
-	useEffect(() => {
-		if (!hasMessages) return;
-		const scrollEl = listRef.current;
-		const contentEl = contentRef.current;
-		if (!scrollEl || !contentEl) return;
-		const ro = new ResizeObserver(() => {
-			if (stickRef.current) scrollEl.scrollTop = scrollEl.scrollHeight;
-		});
-		ro.observe(contentEl);
-		return () => ro.disconnect();
-	}, [hasMessages]);
-
-	// 主动发送消息 → 强制粘底（用户发送即期望看到回复）
+	const { listRef, contentRef, following, resume } = useChatScroll(
+		`${agent.projectId}:${agent.sessionId}`,
+		isSwitchingSession,
+	);
 	const handleSend = useCallback(
 		(
 			text: string,
 			attachments?: Attachment[],
 			behavior?: "steer" | "followUp",
 		): Promise<boolean> => {
-			stickRef.current = true;
-			setAtBottom(true);
+			resume();
 			return sendMessage(text, attachments, behavior);
 		},
-		[sendMessage],
+		[sendMessage, resume],
 	);
-
-	// 点击“回到底部”
-	const resumeScroll = useCallback((): void => {
-		stickRef.current = true;
-		setAtBottom(true);
-		scrollToBottom();
-	}, [scrollToBottom]);
 
 	return (
 		<div className="h-full min-h-0 flex flex-col bg-[var(--bg-base)]">
 			<div className="flex-1 min-h-0 relative">
-				<div
+				<section
 					ref={listRef}
-					onScroll={handleScroll}
 					style={{ overflowAnchor: "none" }}
-					className="h-full overflow-y-auto overflow-x-hidden"
+					// biome-ignore lint/a11y/noNoninteractiveTabindex: 可聚焦的滚动区域支持原生键盘滚动。
+					tabIndex={0}
+					aria-label="聊天消息"
+					className="h-full overflow-y-auto overflow-x-hidden overscroll-y-contain outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
 				>
 					<div
+						ref={contentRef}
 						className={`transition-opacity duration-200 ${isSwitchingSession ? "opacity-0" : "opacity-100"}`}
 					>
 						{hasMessages ? (
-							<div ref={contentRef} className="flex flex-col">
+							<div className="flex flex-col">
 								{messages.map((message, i) => (
 									<MessageItem
 										key={message.id}
@@ -139,7 +91,7 @@ export function ChatMessageList({ agent }: ChatMessageListProps): React.JSX.Elem
 							<EmptyState />
 						)}
 					</div>
-				</div>
+				</section>
 				{/* loading 覆盖层：absolute 不随滚动，opacity crossfade 淡入淡出 */}
 				<div
 					className={`absolute inset-0 flex flex-col items-center justify-center gap-2 text-[var(--text-faint)] transition-opacity duration-200 ${
@@ -152,13 +104,13 @@ export function ChatMessageList({ agent }: ChatMessageListProps): React.JSX.Elem
 				{hasMessages && !isSwitchingSession && (
 					<button
 						type="button"
-						onClick={resumeScroll}
+						onClick={resume}
 						className={[
 							"absolute bottom-3 right-4 size-9 flex items-center justify-center rounded-full z-10",
 							"bg-[var(--bg-base)] border border-[var(--border-base)] shadow-[var(--elevation-raised)]",
 							"text-[var(--text-muted)] hover:text-[var(--text-base)] hover:bg-[var(--overlay-hover)]",
 							"transition-all duration-200",
-							atBottom ? "opacity-0 pointer-events-none translate-y-2 scale-95" : "opacity-100",
+							following ? "opacity-0 pointer-events-none translate-y-2 scale-95" : "opacity-100",
 						].join(" ")}
 						title="回到底部"
 					>
@@ -169,27 +121,35 @@ export function ChatMessageList({ agent }: ChatMessageListProps): React.JSX.Elem
 
 			{approvalRequests.length > 0 && (
 				<div className="shrink-0 max-h-[60vh] overflow-auto">
-					{approvalRequests.map((r) => (
-						<PermissionRequest
-							key={r.requestId}
-							request={r}
-							onApprove={(action, data) => approve(r.requestId, action, data)}
-						/>
-					))}
+					{approvalRequests
+						.filter((r) => !(issue?.kind === "uncertain" && r.requestId === issue.issueId))
+						.map((r) => (
+							<PermissionRequest
+								key={r.requestId}
+								request={r}
+								onApprove={(action, data) => approve(r.requestId, action, data)}
+							/>
+						))}
 				</div>
 			)}
 
-			<StatusBar status={status} isCompacting={isCompacting} />
+			<StatusBar
+				status={status}
+				isCompacting={isCompacting}
+				workingVisible={ui.workingVisible}
+				workingMessage={ui.workingMessage}
+			/>
+			<RecoveryNotice key={agent.sessionId} issue={issue} />
+			<ExtensionPanel key={`${agent.sessionId}:above`} ui={ui} placement="aboveEditor" />
 
 			{lastError && (
 				<p
 					role="alert"
-					className="max-h-24 overflow-auto whitespace-pre-wrap break-words px-4 text-xs text-red-600"
+					className="max-h-24 overflow-auto whitespace-pre-wrap break-words px-4 text-xs text-[var(--danger-text)]"
 				>
 					{lastError}
 				</p>
 			)}
-			<QueueBar />
 			<ChatInput
 				isRunning={isRunning}
 				isSwitchingSession={isSwitchingSession}
@@ -197,13 +157,13 @@ export function ChatMessageList({ agent }: ChatMessageListProps): React.JSX.Elem
 				projectId={agent.projectId}
 				runMode={agent.runMode}
 				runModeLabel={agent.runModeLabel}
-				runModeBusy={isSwitchingSession || !!agent.closed}
 				onSelectRunMode={(m) => {
 					void agent.selectRunMode(m).catch(() => {});
 				}}
 				onSend={handleSend}
 				onInterrupt={interruptRun}
 			/>
+			<ExtensionPanel key={`${agent.sessionId}:below`} ui={ui} placement="belowEditor" />
 		</div>
 	);
 }
@@ -250,7 +210,7 @@ export const UserBubble = memo(function UserBubble({
 }): React.JSX.Element {
 	return (
 		<div className="flex justify-end items-start gap-1.5 px-4 py-1">
-			<div className="max-w-[80%] rounded-2xl rounded-br-md bg-[var(--grey-1000)] px-3.5 py-2">
+			<div className="max-w-[80%] rounded-2xl rounded-br-md bg-[var(--bg-layer-02)] px-3.5 py-2">
 				<p className="text-[15px] leading-relaxed whitespace-pre-wrap break-words text-[var(--text-base)]">
 					{message.content}
 				</p>
@@ -281,6 +241,7 @@ export const AssistantBubble = memo(function AssistantBubble({
 	isThinkingActive?: boolean;
 	isStreaming?: boolean;
 }): React.JSX.Element {
+	const hitRate = message.usage ? cacheHitRate(message.usage) : null;
 	return (
 		<div className="flex flex-col px-4 py-1.5">
 			{message.blocks.map((block, i) => (
@@ -292,7 +253,10 @@ export const AssistantBubble = memo(function AssistantBubble({
 				/>
 			))}
 			{message.errorMessage && (
-				<p role="alert" className="whitespace-pre-wrap break-words px-4 text-xs text-red-600">
+				<p
+					role="alert"
+					className="whitespace-pre-wrap break-words px-4 text-xs text-[var(--danger-text)]"
+				>
 					{message.errorMessage}
 				</p>
 			)}
@@ -300,7 +264,7 @@ export const AssistantBubble = memo(function AssistantBubble({
 				<span className="text-[11px] text-[var(--text-faint)] select-none">（已中断）</span>
 			)}
 			{message.stopReason === "length" && (
-				<p role="status" className="mt-2 text-xs text-amber-700">
+				<p role="status" className="mt-2 text-xs text-[var(--warning-text)]">
 					达到输出长度限制，本次回复尚未完成；可要求助手继续。
 				</p>
 			)}
@@ -312,16 +276,18 @@ export const AssistantBubble = memo(function AssistantBubble({
 					0 && (
 					<p
 						className="mt-2 text-xs text-[var(--text-muted)]"
-						title="Provider 返回的本次响应用量，不是会话累计"
+						title="本次响应用量；缓存命中率 = 缓存读取 / 全部输入 Token"
 					>
 						本次响应 · 输入 {formatTokens(message.usage.inputTokens)} · 输出{" "}
 						{formatTokens(message.usage.outputTokens)}
-						{message.usage.cacheReadTokens > 0
-							? ` · 缓存读取 ${formatTokens(message.usage.cacheReadTokens)}`
-							: ""}
-						{message.usage.cacheCreationTokens > 0
-							? ` · 缓存写入 ${formatTokens(message.usage.cacheCreationTokens)}`
-							: ""}
+						{` · 缓存命中率 ${hitRate === null ? "—" : `${hitRate.toFixed(1)}%`} · `}
+						<time
+							dateTime={new Date(message.createdAt).toISOString()}
+							title={`${beijingFormat(message.createdAt)} 北京时间`}
+							className="whitespace-nowrap tabular-nums"
+						>
+							{messageTime(message.createdAt)}
+						</time>
 					</p>
 				)}
 		</div>
@@ -603,9 +569,13 @@ export const CompactionDivider = memo(function CompactionDivider({
 function StatusBar({
 	status,
 	isCompacting,
+	workingVisible,
+	workingMessage,
 }: {
 	status: AgentStatus | "idle";
 	isCompacting: boolean;
+	workingVisible?: boolean;
+	workingMessage?: string;
 }): React.JSX.Element | null {
 	// 压缩进行中：优先显示压缩态（正交于 AgentStatus，压缩时模型不产生 turn 状态）
 	if (isCompacting) {
@@ -620,6 +590,8 @@ function StatusBar({
 	}
 
 	if (status === "idle") return null;
+	const working = ["thinking", "responding", "tool-use"].includes(status);
+	if (working && workingVisible === false) return null;
 
 	let dotColor = "bg-[var(--text-muted)]";
 	let label = "";
@@ -651,7 +623,7 @@ function StatusBar({
 			<span
 				className={`size-1.5 rounded-full ${dotColor} ${status !== "awaiting-approval" ? "animate-pulse" : ""}`}
 			/>
-			<span>{label}</span>
+			<span>{working && workingMessage ? workingMessage : label}</span>
 		</div>
 	);
 }

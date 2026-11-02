@@ -3,12 +3,15 @@ import type {
 	PendingRequest,
 	ToolPermissionPayload,
 	UiConfirmPayload,
+	UiEditorPayload,
 	UiInputPayload,
 	UiSelectPayload,
 } from "@pi-agent/common";
 import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import type { OnApprove } from "./ApprovalShell";
 import { AskUserQuestionApproval } from "./AskUserQuestionApproval";
 import { BashApproval } from "./BashApproval";
@@ -18,9 +21,13 @@ import { WriteApproval } from "./WriteApproval";
 function RequestContent({
 	request,
 	onApprove,
+	busy,
+	error,
 }: {
 	request: PendingRequest;
 	onApprove: OnApprove;
+	busy?: boolean;
+	error?: string | null;
 }): React.JSX.Element {
 	if (request.kind === "ask_question")
 		return (
@@ -30,7 +37,7 @@ function RequestContent({
 			/>
 		);
 	if (request.kind !== "tool_permission")
-		return <UiApproval request={request} onApprove={onApprove} />;
+		return <UiApproval request={request} onApprove={onApprove} busy={busy} error={error} />;
 	const permission = request.payload as ToolPermissionPayload;
 	switch (permission.toolName.toLowerCase()) {
 		case "bash":
@@ -83,18 +90,70 @@ export function PermissionRequest({
 							: "到期后自动取消。"}
 				</p>
 			)}
-			<RequestContent request={request} onApprove={submit} />
+			<RequestContent request={request} onApprove={submit} busy={busy} error={error} />
 			{error && (
-				<p role="alert" className="mx-4 whitespace-pre-wrap break-words text-xs text-red-600">
+				<p
+					role="alert"
+					className="mx-4 whitespace-pre-wrap break-words text-xs text-[var(--danger-text)]"
+				>
 					{error}
 				</p>
 			)}
 		</fieldset>
 	);
 }
-function UiApproval({ request, onApprove }: { request: PendingRequest; onApprove: OnApprove }) {
-	const [value, setValue] = useState("");
+function UiApproval({
+	request,
+	onApprove,
+	busy,
+	error,
+}: {
+	request: PendingRequest;
+	onApprove: OnApprove;
+	busy?: boolean;
+	error?: string | null;
+}) {
+	const [value, setValue] = useState(
+		request.kind === "ui_editor" ? ((request.payload as UiEditorPayload).prefill ?? "") : "",
+	);
 	const p = request.payload as UiSelectPayload | UiConfirmPayload | UiInputPayload;
+	if (request.kind === "ui_editor")
+		return (
+			<Dialog
+				open
+				onOpenChange={(open) => {
+					if (!open && !busy) void onApprove("cancel");
+				}}
+			>
+				<DialogContent hideClose={busy} className="sm:max-w-2xl">
+					<DialogTitle>{p.title}</DialogTitle>
+					<DialogDescription>
+						编辑内容只保留在当前页面；任一页面提交后，所有页面关闭本次请求。
+					</DialogDescription>
+					<Textarea
+						aria-label={p.title}
+						rows={12}
+						value={value}
+						disabled={busy}
+						onChange={(event) => setValue(event.target.value)}
+						className="max-h-[50dvh] resize-y whitespace-pre-wrap font-mono text-sm"
+					/>
+					{error && (
+						<p role="alert" className="text-xs text-destructive">
+							{error}
+						</p>
+					)}
+					<div className="flex justify-end gap-2">
+						<Button disabled={busy} variant="outline" onClick={() => void onApprove("cancel")}>
+							取消
+						</Button>
+						<Button disabled={busy} onClick={() => void onApprove("answer", value)}>
+							{busy ? "提交中…" : "提交编辑内容"}
+						</Button>
+					</div>
+				</DialogContent>
+			</Dialog>
+		);
 	return (
 		<div className="mx-4 my-2 rounded-lg border border-[var(--border-base)] bg-[var(--bg-layer-01)] p-4 space-y-3">
 			<p className="whitespace-pre-wrap break-words">{String(p.title ?? "")}</p>

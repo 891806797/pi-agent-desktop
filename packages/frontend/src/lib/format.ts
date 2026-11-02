@@ -28,3 +28,8 @@ export function beijingFormat(date: Date | number = new Date()): string {
 export function beijingNow(): string {
 	return beijingFormat(new Date());
 }
+
+export function messageTime(timestamp: number, now = Date.now()): string {
+	const full = beijingFormat(timestamp);
+	return now - timestamp < 86_400_000 ? full.slice(11) : full;
+}

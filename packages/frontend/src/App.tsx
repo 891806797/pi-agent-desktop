@@ -1,10 +1,12 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { RequireAnon, RequireAuth } from "@/components/auth/RequireAuth";
+import { useSessionDirectory } from "@/hooks/useSessionDirectory";
 import { ChatPage } from "@/pages/ChatPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 
 export function App() {
+	useSessionDirectory();
 	return (
 		<BrowserRouter>
 			<Routes>

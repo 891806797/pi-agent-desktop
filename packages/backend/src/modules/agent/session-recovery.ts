@@ -1,6 +1,14 @@
 import { runToolCall } from "@earendil-works/pi-agent-core";
 import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import { captureQueuedImages, queueEntries, retainSessionInputs } from "./queue-operations";
+import type { RecoveryActionInput, RunIssue } from "@pi-agent/common";
+import { AppError } from "@/core/app-error";
+import {
+	captureQueuedImages,
+	clearSessionQueue,
+	queueEntries,
+	releaseRetainedInputs,
+	retainSessionInputs,
+} from "./queue-operations";
 import type { RecoveryInput, RecoveryTool, RuntimeCheckpoint, RuntimeStore } from "./runtime-store";
 import type { SessionContext } from "./session-registry";
 
@@ -16,6 +24,29 @@ export class SessionRecovery {
 	private controller = new AbortController();
 	private task: Promise<void> = Promise.resolve();
 	running = false;
+	get issue(): RunIssue | null {
+		return this.state.issue ?? null;
+	}
+	get blocked(): boolean {
+		return this.state.issue?.kind === "uncertain";
+	}
+	restorePausedInputs(): void {
+		this.commit();
+		retainSessionInputs(this.ctx, this.state.inputs);
+	}
+	private setIssue(kind: RunIssue["kind"], message: string) {
+		this.state.issue = {
+			issueId: crypto.randomUUID(),
+			attemptId: this.state.attemptId ?? crypto.randomUUID(),
+			revision: (this.state.issue?.revision ?? 0) + 1,
+			kind,
+			message,
+			createdAt: Date.now(),
+			allowedActions: [kind === "recovery" ? "retryRecovery" : "continue", "abandon"],
+		};
+		this.save();
+		this.ctx.bus.publish({ event: "run_issue", data: { issue: this.issue } });
+	}
 	constructor(
 		private ctx: SessionContext,
 		private store: RuntimeStore,
@@ -37,6 +68,7 @@ export class SessionRecovery {
 			write: (request, outcome) => {
 				if (this.disabled) return;
 				const previous = this.state.approvals;
+				const previousIssue = this.state.issue;
 				const index = this.state.approvals.findIndex(
 					(item) => item.request.requestId === request.requestId,
 				);
@@ -45,9 +77,28 @@ export class SessionRecovery {
 				if (index < 0) this.state.approvals.push(item);
 				else this.state.approvals[index] = item;
 				try {
+					if (
+						request.requestId.startsWith("restart-confirm:") &&
+						!outcome &&
+						this.state.issue?.kind !== "uncertain"
+					) {
+						this.state.issue = {
+							issueId: request.requestId,
+							attemptId: this.state.attemptId ?? crypto.randomUUID(),
+							revision: 1,
+							kind: "uncertain",
+							message:
+								"有工具在重启前已经开始，执行结果未知。请检查实际状态后继续，系统不会自动重做。",
+							createdAt: request.createdAt,
+							allowedActions: ["continue", "abandon"],
+						};
+					}
 					this.save();
+					if (previousIssue !== this.state.issue)
+						this.ctx.bus.publish({ event: "run_issue", data: { issue: this.issue } });
 				} catch (error) {
 					this.state.approvals = previous;
+					this.state.issue = previousIssue;
 					throw error;
 				}
 			},
@@ -58,6 +109,8 @@ export class SessionRecovery {
 		if (this.disabled) return;
 		if (
 			this.state.active ||
+			this.state.issue ||
+			this.state.intent ||
 			this.state.inputs.length ||
 			this.state.approvals.some((item) => !item.outcome)
 		)
@@ -73,6 +126,10 @@ export class SessionRecovery {
 		id: string = crypto.randomUUID(),
 	): string {
 		const input: RecoveryInput = { id, text, images, behavior, prepared, phase: "pending" };
+		if (this.state.issue && !this.blocked) {
+			this.state.issue = undefined;
+			this.ctx.bus.publish({ event: "run_issue", data: { issue: null } });
+		}
 		this.state.inputs = this.state.inputs.filter((item) => item.id !== id);
 		this.state.inputs.push(input);
 		this.save();
@@ -165,6 +222,7 @@ export class SessionRecovery {
 	onEvent(event: AgentSessionEvent): void {
 		if (this.disabled) return;
 		if (event.type === "agent_start") {
+			this.state.attemptId = this.state.intent?.attemptId ?? crypto.randomUUID();
 			this.state.active = true;
 			this.save();
 		}
@@ -234,15 +292,29 @@ export class SessionRecovery {
 		if (event.type === "message_end") this.commitLater();
 		if (event.type === "agent_settled") {
 			this.state.active = false;
+			const last = this.ctx.session.messages.findLast((message) => message.role === "assistant");
+			if (!this.ctx.interrupted && last?.role === "assistant" && last.stopReason === "error")
+				this.setIssue("model", last.errorMessage ?? "模型请求未完成，请检查原因后继续。");
+			if (this.state.intent) this.finishAttempt(this.state.issue ? "failed" : "completed");
 			this.commitLater();
 		}
 	}
 
 	start(): void {
+		if (this.running) return;
+		if (this.controller.signal.aborted) this.controller = new AbortController();
 		this.running = true;
 		this.task = this.restore()
 			.catch((error) => {
 				if (!this.disabled && !this.controller.signal.aborted) {
+					try {
+						this.state.active = false;
+						this.setIssue("recovery", error instanceof Error ? error.message : String(error));
+						this.finishAttempt("failed");
+						this.restorePausedInputs();
+					} catch (saveError) {
+						console.error("[recovery issue]", saveError);
+					}
 					this.ctx.bus.publish({
 						event: "error",
 						data: {
@@ -254,7 +326,84 @@ export class SessionRecovery {
 			})
 			.finally(() => {
 				this.running = false;
+				if (!this.disabled && !this.ctx.closing)
+					this.ctx.bus.publish({
+						event: "status",
+						data: { status: this.issue ? "error" : this.ctx.status },
+					});
 			});
+	}
+
+	async applyAction(input: RecoveryActionInput): Promise<{ accepted: true }> {
+		const signature = JSON.stringify([
+			this.ctx.sessionId,
+			input.issueId,
+			input.expectedRevision,
+			input.action,
+		]);
+		const previous = this.store.action(this.ctx.userId, input.actionId);
+		if (previous !== undefined) {
+			if (previous !== signature) throw new AppError("BAD_REQUEST", "操作标识已用于其他恢复动作");
+			return { accepted: true };
+		}
+		const issue = this.state.issue;
+		if (
+			!issue ||
+			issue.issueId !== input.issueId ||
+			issue.revision !== input.expectedRevision ||
+			!issue.allowedActions.includes(input.action)
+		)
+			throw new AppError("SESSION_BUSY", "恢复状态已变化，请刷新后重试");
+		if (this.ctx.closing || (!this.ctx.session.isIdle && !this.blocked))
+			throw new AppError("SESSION_BUSY");
+		const before = structuredClone(this.state);
+		this.state.issue = undefined;
+		this.state.active = input.action !== "abandon";
+		this.state.intent =
+			input.action === "abandon"
+				? undefined
+				: { actionId: input.actionId, attemptId: crypto.randomUUID(), issueId: input.issueId };
+		if (input.action === "abandon") {
+			this.state.inputs = [];
+			for (const saved of this.state.approvals)
+				if (!saved.outcome) saved.outcome = { action: "cancelled", reason: "已放弃本轮" };
+		} else if (issue.kind === "uncertain" && this.ctx.approvals.has(issue.issueId)) {
+			const saved = this.state.approvals.find((item) => item.request.requestId === issue.issueId);
+			if (saved) saved.outcome = { action: "answer", data: true };
+		} else
+			this.state.approvals = this.state.approvals.filter(
+				(item) => !item.request.requestId.startsWith("restart-confirm:"),
+			);
+		try {
+			this.store.claimAction(this.state, input.actionId, signature);
+		} catch (error) {
+			this.state = before;
+			throw error;
+		}
+		this.ctx.bus.publish({ event: "run_issue", data: { issue: null } });
+		if (input.action === "abandon") {
+			this.cancel();
+			this.ctx.interrupted = true;
+			this.ctx.approvals.rejectAll("已放弃本轮");
+			clearSessionQueue(this.ctx);
+			await this.ctx.session.abort();
+			await this.wait();
+			this.ctx.bus.publish({ event: "status", data: { status: "idle" } });
+		} else if (issue.kind === "uncertain" && this.ctx.approvals.has(issue.issueId)) {
+			this.ctx.approvals.settle(issue.issueId, { action: "answer", data: true });
+		} else {
+			this.start();
+		}
+		return { accepted: true };
+	}
+	private finishAttempt(status: "completed" | "failed") {
+		if (!this.state.intent) return;
+		this.ctx.session.sessionManager.appendCustomEntry("web_run_attempt", {
+			...this.state.intent,
+			status,
+		});
+		this.state.intent = undefined;
+		this.save();
 	}
 	private emit(event: AgentSessionEvent): void {
 		this.onEvent(event);
@@ -317,7 +466,52 @@ export class SessionRecovery {
 	}
 
 	private async restore(): Promise<void> {
+		releaseRetainedInputs(this.ctx);
 		this.commit();
+		if (this.state.intent) {
+			const intent = this.state.intent;
+			const entries = this.ctx.session.sessionManager.getEntries();
+			const marker = entries.findLast(
+				(entry) =>
+					entry.type === "custom" &&
+					entry.customType === "web_run_attempt" &&
+					(entry.data as { attemptId?: string })?.attemptId === intent.attemptId,
+			);
+			if (marker?.type === "custom" && (marker.data as { status?: string }).status !== "started") {
+				this.state.intent = undefined;
+				this.state.active = false;
+				this.save();
+				if (this.state.issue) {
+					this.restorePausedInputs();
+					this.ctx.bus.publish({ event: "run_issue", data: { issue: this.issue } });
+					this.ctx.bus.publish({ event: "status", data: { status: "error" } });
+					return;
+				}
+				if (!this.state.inputs.length) return;
+				this.state.inputs[0]!.phase = "pending";
+			} else if (marker) {
+				const after = entries.slice(entries.indexOf(marker) + 1);
+				const last = after.findLast(
+					(entry) => entry.type === "message" && entry.message.role === "assistant",
+				);
+				if (
+					last?.type === "message" &&
+					last.message.role === "assistant" &&
+					last.message.stopReason === "stop" &&
+					after.findLast((entry) => entry.type === "message") === last &&
+					!last.message.content.some((part) => part.type === "toolCall")
+				) {
+					this.state.active = false;
+					this.finishAttempt("completed");
+					if (!this.state.inputs.length) return;
+					this.state.inputs[0]!.phase = "pending";
+				}
+			} else
+				this.ctx.session.sessionManager.appendCustomEntry("web_run_attempt", {
+					...intent,
+					status: "started",
+				});
+		}
 		this.ctx.bus.publish({ event: "status", data: { status: "thinking" } });
 		const pending: Array<{ assistant: Assistant; call: Call; tool?: RecoveryTool }> = [];
 		const messages = this.ctx.session.messages;
@@ -360,6 +554,28 @@ export class SessionRecovery {
 					(entry) => entry.request.requestId === item.call.id && !entry.outcome,
 				),
 		);
+		const uncertainIds = new Set(unknown.map((item) => item.call.id));
+		let interruptedDialog = false;
+		for (const saved of this.state.approvals) {
+			if (
+				saved.outcome ||
+				!saved.request.kind.startsWith("ui_") ||
+				saved.request.requestId.startsWith("restart-confirm:")
+			)
+				continue;
+			saved.outcome = { action: "cancelled", reason: "进程重启后无法安全恢复原扩展调用栈" };
+			if (!saved.request.origin || !uncertainIds.has(saved.request.origin.toolCallId))
+				interruptedDialog = true;
+		}
+		if (interruptedDialog && !unknown.length) {
+			this.state.active = false;
+			this.setIssue(
+				"recovery",
+				"上次扩展交互的调用方已中断，无法恢复原对话框。可以基于已保存的上下文继续，或放弃本轮。",
+			);
+			this.ctx.bus.publish({ event: "status", data: { status: "error" } });
+			return;
+		}
 		const confirmationId = `restart-confirm:${this.ctx.sessionId}`;
 		const previous = this.state.approvals.find((item) => item.request.requestId === confirmationId);
 		if (unknown.length || previous) {
@@ -389,6 +605,13 @@ export class SessionRecovery {
 				this.ctx.bus.publish({ event: "status", data: { status: "idle" } });
 				return;
 			}
+			this.state.issue = undefined;
+			this.ctx.bus.publish({ event: "run_issue", data: { issue: null } });
+			if (this.state.intent)
+				this.ctx.session.sessionManager.appendCustomEntry("web_run_attempt", {
+					...this.state.intent,
+					status: "started",
+				});
 		}
 		this.state.active = true;
 		this.save();
@@ -431,9 +654,9 @@ export class SessionRecovery {
 			else
 				await this.ctx.session.sendCustomMessage(
 					{
-						customType: "web_restart_recovery",
+						customType: "web_run_recovery",
 						content:
-							"服务重启后恢复本轮任务。请基于已有用户需求、已完成的工具结果继续；已完成的操作不要重复。对执行结果未知的工具先检查实际状态；如果任务已完成，简短确认即可，不要增加新任务。",
+							"继续上次未完成的任务。请基于已有用户需求、已完成的工具结果继续；已完成的操作不要重复。对执行结果未知的工具先检查实际状态；如果任务已完成，简短确认即可，不要增加新任务。",
 						display: true,
 					},
 					{ triggerTurn: true },
@@ -492,6 +715,9 @@ export class SessionRecovery {
 		this.controller.abort();
 		this.state.active = false;
 		this.state.inputs = [];
+		this.state.issue = undefined;
+		this.state.intent = undefined;
+		this.ctx.bus.publish({ event: "run_issue", data: { issue: null } });
 		this.save();
 	}
 	wait(): Promise<void> {

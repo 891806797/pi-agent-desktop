@@ -39,6 +39,12 @@ const responses = new Map<string, (response: Response) => void>();
 let creates = 0;
 let modeAttempts = 0;
 globalThis.fetch = (url, init) => {
+	if (url === "/api/settings/defaults")
+		return Promise.resolve(
+			Response.json({ ok: true, data: { model: null, thinkingLevel: "off", runMode: "safe" } }),
+		);
+	if (url === "/api/session/thinking")
+		return Promise.resolve(Response.json({ ok: true, data: {} }));
 	if (url === "/api/sessions") {
 		creates++;
 		return Promise.resolve(Response.json({ ok: true, data: { sessionId: "created", live: true } }));
@@ -67,11 +73,13 @@ void acceptedA.then(() => {
 	settledA = true;
 });
 expect(settledA).toBe(false);
+await new Promise((resolve) => setTimeout(resolve, 0));
 loc.search = "?workspace=w&sessionId=B";
 routerLoc.search = loc.search;
 let b = render();
 const acceptedB = b.sendMessage("B pending");
 expect(acceptedB).toBeInstanceOf(Promise);
+await new Promise((resolve) => setTimeout(resolve, 0));
 expect(sent).toEqual(["A", "B"]);
 expect(await b.sendMessage("duplicate B")).toBe(false);
 responses.get("A")!(Response.json({ ok: true, data: { queued: false } }));
@@ -85,6 +93,7 @@ expect(await acceptedB).toBe(true);
 b = render();
 const acceptedAgain = b.sendMessage("B accepted again");
 expect(acceptedAgain).toBeInstanceOf(Promise);
+await new Promise((resolve) => setTimeout(resolve, 0));
 expect(sent).toEqual(["A", "B", "B"]);
 
 loc.search = "?workspace=w";
@@ -108,6 +117,12 @@ routerLoc.search = loc.search;
 sent.length = 0;
 let resolveMode!: (r: Response) => void;
 globalThis.fetch = (url, init) => {
+	if (url === "/api/settings/defaults")
+		return Promise.resolve(
+			Response.json({ ok: true, data: { model: null, thinkingLevel: "off", runMode: "safe" } }),
+		);
+	if (url === "/api/session/thinking")
+		return Promise.resolve(Response.json({ ok: true, data: {} }));
 	if (url === "/api/sessions")
 		return Promise.resolve(Response.json({ ok: true, data: { sessionId: "delayed", live: true } }));
 	if (url === "/api/session/run-mode")
@@ -157,6 +172,30 @@ globalThis.fetch = async () => {
 await old.approve("shared-call", "allow");
 await old.selectRunMode("auto");
 expect(staleRequests).toBe(0);
+
+// The same URL under a different account must not revive a waiting send.
+const { useAuthStore } = await import("../../src/stores/auth");
+const { applyInitialPreferences } = await import("../../src/lib/default-settings");
+slots.length = 0;
+loc.search = "?workspace=w";
+routerLoc.search = loc.search;
+useAuthStore.setState({ username: "original" });
+useChatStore.setState({ sessionId: null });
+let releasePreferences!: () => void;
+const preferenceGate = applyInitialPreferences(
+	() =>
+		new Promise<void>((resolve) => {
+			releasePreferences = resolve;
+		}),
+);
+await new Promise((resolve) => setTimeout(resolve, 0));
+const waitingSend = render().sendMessage("belongs to original");
+useAuthStore.setState({ username: "different" });
+releasePreferences();
+await preferenceGate;
+expect(await waitingSend).toBe(false);
+expect(staleRequests).toBe(0);
+expect(loc.search).toBe("?workspace=w");
 
 slots.length = 0;
 loc.search = "?workspace=w";

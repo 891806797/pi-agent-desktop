@@ -3,20 +3,25 @@
  * 会话操作坐标：header x-session-id + x-workspace-dir（base64url，§5.10）。
  */
 
+import { RecoveryActionInput, UpdateDefaultSettingsInput } from "@pi-agent/common";
 import {
 	ApprovalActionInput,
 	CreateSessionInput,
+	DeleteSessionInput,
 	ListSessionsQuery,
 	ModelSettingsInput,
 	QueueDispatchInput,
 	QueueRemoveInput,
+	ReadSessionInput,
 	SendMessageInput,
 	SessionHeaders,
 	SetModelInput,
 	SetRunModeInput,
 	SetThinkingInput,
+	UpdateSessionInput,
 } from "@pi-agent/common/dto/requests";
 import { Elysia } from "elysia";
+import { z } from "zod";
 import { ok } from "@/core/response";
 import { vh } from "@/core/validate";
 import {
@@ -25,8 +30,8 @@ import {
 	closeSession,
 	commands,
 	getHistory,
-	listSessions,
 	openSession,
+	recoverSession,
 	removeQueueItem,
 	requireCtx,
 	sendMessage,
@@ -36,13 +41,23 @@ import {
 	setThinking,
 	settleApproval,
 } from "@/modules/agent/agent.service";
+import {
+	getDefaultSettings,
+	updateDefaultSettings,
+} from "@/modules/agent/default-settings.service";
 import { getModelSettings, listModels, saveModelSettings } from "@/modules/agent/model.service";
 import { dispatchQueuedMessage } from "@/modules/agent/queue-operations";
+import { registry } from "@/modules/agent/session-registry";
 import { requireUser } from "@/modules/auth/auth.service";
+import { resolveWorkspaceB64 } from "@/modules/system/workspace-registry";
 import { authContext } from "./auth.middleware";
 
 export const agentRoutes = new Elysia({ prefix: "/api" })
 	.use(authContext)
+	.get("/settings/defaults", ({ user }) => ok(getDefaultSettings(requireUser(user).userId)))
+	.patch("/settings/defaults", ({ user, body }) =>
+		ok(updateDefaultSettings(requireUser(user).userId, vh(UpdateDefaultSettingsInput, body))),
+	)
 	.get("/models", async ({ user }) => {
 		const u = requireUser(user);
 		return ok({ models: await listModels(u.userId) });
@@ -66,7 +81,42 @@ export const agentRoutes = new Elysia({ prefix: "/api" })
 	.get("/sessions", ({ query, user }) => {
 		const u = requireUser(user);
 		const input = vh(ListSessionsQuery, query);
-		return ok({ sessions: listSessions(u, input.workspace) });
+		return ok(
+			registry.listCatalog(u.userId, {
+				...input,
+				workspace: input.workspace ? resolveWorkspaceB64(u.userId, input.workspace) : undefined,
+				archived: input.archived === "true",
+			}),
+		);
+	})
+	.patch("/sessions/:sessionId", async ({ params, body, user }) => {
+		const u = requireUser(user);
+		const input = vh(UpdateSessionInput, body);
+		return ok(
+			await registry.updateSession(
+				u.userId,
+				vh(z.uuid(), params.sessionId),
+				input.expectedRevision,
+				input,
+			),
+		);
+	})
+	.delete("/sessions/:sessionId", async ({ params, body, user }) => {
+		const u = requireUser(user);
+		const input = vh(DeleteSessionInput, body);
+		await registry.deleteSession(
+			u.userId,
+			vh(z.uuid(), params.sessionId),
+			input.expectedRevision,
+			input.stopIfRunning,
+		);
+		return ok({ deleted: true });
+	})
+	.post("/sessions/:sessionId/read", ({ params, body, user }) => {
+		const u = requireUser(user);
+		const input = vh(ReadSessionInput, body);
+		registry.catalog().markRead(u.userId, vh(z.uuid(), params.sessionId), input.noticeVersion);
+		return ok({ read: true });
 	})
 	.get("/session/info", ({ headers, user }) => {
 		const u = requireUser(user);
@@ -88,6 +138,12 @@ export const agentRoutes = new Elysia({ prefix: "/api" })
 	})
 
 	// ===== 消息与队列 =====
+	.post("/session/recovery", async ({ headers, body, user }) => {
+		const u = requireUser(user);
+		const h = vh(SessionHeaders, headers);
+		const input = vh(RecoveryActionInput, body);
+		return ok(await recoverSession(u, h["x-session-id"], h["x-workspace-dir"], input));
+	})
 	.post("/session/messages", async ({ headers, body, user }) => {
 		const u = requireUser(user);
 		const h = vh(SessionHeaders, headers);

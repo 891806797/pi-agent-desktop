@@ -1,0 +1,1 @@
+ALTER TABLE `session_catalog` ADD `management_error` text;

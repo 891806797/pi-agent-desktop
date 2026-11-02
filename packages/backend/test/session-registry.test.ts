@@ -7,6 +7,7 @@ import { env } from "@/env";
 import { setModel } from "@/modules/agent/agent.service";
 import { SessionRegistry, registry as serviceRegistry } from "@/modules/agent/session-registry";
 import { userSessionsDir } from "@/modules/system/paths";
+import { configureTestModels } from "./helpers";
 
 const temp = mkdtempSync(join(tmpdir(), "pi-registry-"));
 const originalData = env.dataDir;
@@ -14,6 +15,7 @@ const user = { userId: "registry-test", username: "test" };
 let registries: SessionRegistry[] = [];
 function setup() {
 	(env as { dataDir: string }).dataDir = temp;
+	configureTestModels(user.userId);
 	const registry = new SessionRegistry();
 	registries.push(registry);
 	const cwd = join(temp, crypto.randomUUID());
@@ -51,7 +53,7 @@ describe("SessionRegistry 生命周期", () => {
 		const { registry, cwd } = setup();
 		const ctx = await registry.create(user, cwd);
 		const runtime = await registry.modelRuntimeFor(user.userId);
-		const model = runtime.getModels()[0]!;
+		const model = runtime.getModels("fixture")[0]!;
 		let release!: (allowed: Awaited<ReturnType<typeof runtime.checkAuth>>) => void;
 		let entered!: () => void;
 		const started = new Promise<void>((resolve) => {
@@ -102,9 +104,9 @@ describe("SessionRegistry 生命周期", () => {
 	test("保留 SDK 恢复的可用模型，不覆盖为列表首项", async () => {
 		const { registry, cwd } = setup();
 		const runtime = await registry.modelRuntimeFor(user.userId);
-		const models = runtime.getModels().slice(0, 2);
+		const models = runtime.getModels("fixture").slice(0, 2);
 		expect(models.length).toBe(2);
-		const available = spyOn(runtime, "getAvailable").mockResolvedValue(models);
+
 		const originalBind = AgentSession.prototype.bindExtensions;
 		const bind = spyOn(AgentSession.prototype, "bindExtensions").mockImplementation(async function (
 			this: AgentSession,
@@ -119,7 +121,6 @@ describe("SessionRegistry 生命周期", () => {
 			expect(ctx.session.model?.id).toBe(models[1]!.id);
 			expect(setModel).not.toHaveBeenCalled();
 		} finally {
-			available.mockRestore();
 			bind.mockRestore();
 			setModel.mockRestore();
 		}
@@ -127,8 +128,8 @@ describe("SessionRegistry 生命周期", () => {
 	test("等待 fallback 模型实际切换，SDK 拒绝时创建失败", async () => {
 		const { registry, cwd } = setup();
 		const runtime = await registry.modelRuntimeFor(user.userId);
-		const models = runtime.getModels().slice(0, 2);
-		const available = spyOn(runtime, "getAvailable").mockResolvedValue([models[0]!]);
+		const models = runtime.getModels("fixture").slice(0, 2);
+		models[1] = runtime.getModels("deepseek")[0]!;
 		const originalBind = AgentSession.prototype.bindExtensions;
 		const bind = spyOn(AgentSession.prototype, "bindExtensions").mockImplementation(async function (
 			this: AgentSession,
@@ -145,7 +146,6 @@ describe("SessionRegistry 生命周期", () => {
 			await expect(registry.create(user, cwd)).rejects.toThrow("model switch failure");
 			expect(registry.liveCount()).toBe(0);
 		} finally {
-			available.mockRestore();
 			bind.mockRestore();
 			setModel.mockRestore();
 		}
@@ -236,7 +236,7 @@ describe("SessionRegistry 生命周期", () => {
 		);
 		const ctx = await registry.create(user, cwd);
 		expect(existsSync(marker)).toBe(false);
-		expect(ctx.resourceLoader.getExtensions().extensions.length).toBe(2);
+		expect(ctx.resourceLoader.getExtensions().extensions.length).toBe(3);
 	});
 	test("活跃 resume 校验属主与工作区", async () => {
 		const { registry, cwd } = setup();

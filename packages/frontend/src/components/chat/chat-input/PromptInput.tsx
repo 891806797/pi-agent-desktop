@@ -1,8 +1,16 @@
-import type { RunMode, SlashCommand } from "@pi-agent/common";
+import {
+	formatModelName,
+	type ModelRef,
+	type RunMode,
+	type SlashCommand,
+	type ThinkingLevel,
+} from "@pi-agent/common";
 import { ArrowUpIcon, FileIcon, ShieldCheckIcon, SquareIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { QueueBar } from "@/components/input/QueueBar";
 import type { Attachment } from "@/lib/agent-types";
 import * as api from "@/lib/api";
+import { updatePreferences } from "@/lib/default-settings";
 import { useChatStore } from "@/stores/chat";
 import { CommandPopover } from "./CommandPopover";
 import {
@@ -31,8 +39,6 @@ export interface PromptInputProps {
 	runMode: RunMode;
 	/** 执行模式显示名 */
 	runModeLabel: string;
-	/** 会话切换或关闭时禁用；运行中允许修改后续工具的权限规则。 */
-	runModeBusy: boolean;
 	/** 活会话热切换；新会话保留选择，创建后应用。 */
 	onSelectRunMode: (mode: RunMode) => void;
 	onSend: (
@@ -94,6 +100,11 @@ function basename(p: string): string {
 	return p.split(/[/\\]/).pop() ?? p;
 }
 
+const SEND_MODES = [
+	{ value: "followUp", label: "排队发送", description: "当前任务结束后自动发送" },
+	{ value: "steer", label: "直接发送", description: "不停止当前运行，尽快处理" },
+];
+
 const showError = (err: unknown) => useChatStore.setState({ lastError: String(err) });
 
 export function PromptInput(props: PromptInputProps): React.JSX.Element {
@@ -104,14 +115,20 @@ export function PromptInput(props: PromptInputProps): React.JSX.Element {
 		projectId,
 		runMode,
 		runModeLabel,
-		runModeBusy,
 		onSelectRunMode,
 		onSend,
 		onInterrupt,
 	} = props;
 	const [behavior, setBehavior] = useState<"steer" | "followUp">("followUp");
+	const [sendModeOpen, setSendModeOpen] = useState(false);
+	const [sendModeQuery, setSendModeQuery] = useState("");
+	const [sendModeActive, setSendModeActive] = useState(0);
+	const sendModeItems = SEND_MODES.filter(
+		(item) =>
+			item.label.includes(sendModeQuery.trim()) || item.description.includes(sendModeQuery.trim()),
+	);
 	const availableThinkingLevels = useChatStore((s) => s.availableThinkingLevels);
-	const hasSession = useChatStore((s) => !!s.sessionId && !s.closed);
+	const hasSession = useChatStore((s) => !!s.sessionId);
 	const renderedSearch = location.search;
 	const rootRef = useRef<HTMLDivElement>(null);
 	const draftRevision = useRef(0);
@@ -121,14 +138,25 @@ export function PromptInput(props: PromptInputProps): React.JSX.Element {
 	// 模型/思考强度：直接从 store + api 取（直接消费 SDK 投影状态）
 	const model = useChatStore((s) => s.model);
 	const thinkingLevel = useChatStore((s) => s.thinkingLevel);
-	const [models, setModels] = useState<Array<{ provider: string; modelId: string; name?: string }>>(
-		[],
-	);
+	const [models, setModels] = useState<ModelRef[]>([]);
+	const [modelsLoading, setModelsLoading] = useState(true);
+	const [modelsError, setModelsError] = useState<string | null>(null);
 	useEffect(() => {
+		let cancelled = false;
 		void api
 			.listModels()
-			.then((r) => setModels(r.models))
-			.catch(() => {});
+			.then((r) => {
+				if (!cancelled) setModels(r.models);
+			})
+			.catch((error) => {
+				if (!cancelled) setModelsError(error instanceof Error ? error.message : String(error));
+			})
+			.finally(() => {
+				if (!cancelled) setModelsLoading(false);
+			});
+		return () => {
+			cancelled = true;
+		};
 	}, []);
 	/** 输入框 + 三个 Popover 的外层容器：用于 outside click 关闭 Popover */
 	const inputWrapRef = useRef<HTMLDivElement>(null);
@@ -158,6 +186,10 @@ export function PromptInput(props: PromptInputProps): React.JSX.Element {
 	const [thinkingOpen, setThinkingOpen] = useState(false);
 	const [thinkingQuery, setThinkingQuery] = useState("");
 	const [thinkingActive, setThinkingActive] = useState(0);
+	const supportedThinkingLevels = hasSession
+		? availableThinkingLevels
+		: (models.find((item) => item.provider === model?.provider && item.modelId === model.modelId)
+				?.supportedThinkingLevels ?? ["off"]);
 
 	const filteredCommands = useMemo(() => {
 		const q = commandQuery.trim().toLowerCase();
@@ -203,7 +235,7 @@ export function PromptInput(props: PromptInputProps): React.JSX.Element {
 		return models
 			.map((m) => ({
 				value: `${m.provider}/${m.modelId}`,
-				label: m.name ?? m.modelId,
+				label: formatModelName(m),
 				description: m.provider,
 			}))
 			.filter(
@@ -212,10 +244,12 @@ export function PromptInput(props: PromptInputProps): React.JSX.Element {
 			);
 	}, [models, modelQuery]);
 
-	const currentModelLabel = model
-		? (models.find((m) => `${m.provider}/${m.modelId}` === `${model.provider}/${model.modelId}`)
-				?.name ?? model.modelId)
-		: "选择模型";
+	const currentModelLabel =
+		!modelsLoading && models.length === 0
+			? "无可用模型"
+			: model
+				? formatModelName(model)
+				: "选择模型";
 
 	// 思考强度 items
 	const thinkingItems = useMemo(() => {
@@ -228,14 +262,16 @@ export function PromptInput(props: PromptInputProps): React.JSX.Element {
 			{ value: "xhigh", label: "极高", description: "极致思考" },
 			{ value: "max", label: "最高", description: "模型支持的最高思考强度" },
 		];
-		const supported = all.filter((it) => availableThinkingLevels.includes(it.value as never));
+		const supported = all.filter((it) =>
+			supportedThinkingLevels.includes(it.value as ThinkingLevel),
+		);
 		const q = thinkingQuery.trim().toLowerCase();
 		return q
 			? supported.filter(
 					(it) => it.label.toLowerCase().includes(q) || it.value.toLowerCase().includes(q),
 				)
 			: supported;
-	}, [thinkingQuery, availableThinkingLevels]);
+	}, [thinkingQuery, supportedThinkingLevels]);
 
 	const adjustHasText = useCallback(() => {
 		draftRevision.current++;
@@ -449,6 +485,7 @@ export function PromptInput(props: PromptInputProps): React.JSX.Element {
 		setCommandOpen(false);
 		setModelOpen(false);
 		setThinkingOpen(false);
+		setSendModeOpen(false);
 		setRunModeOpen(true);
 		setRunModeActive(runModeItems.findIndex((it) => it.value === runMode));
 	}, [runModeItems, runMode]);
@@ -464,7 +501,11 @@ export function PromptInput(props: PromptInputProps): React.JSX.Element {
 				const p = value.slice(0, slash);
 				const m = value.slice(slash + 1);
 				if (p && m)
-					void api.setModel(p, m).catch((err) => {
+					void updatePreferences(
+						{ model: { provider: p, modelId: m } },
+						() => location.search === search,
+						() => api.setModel(p, m),
+					).catch((err) => {
 						if (location.search === search) showError(err);
 					});
 			}
@@ -480,6 +521,7 @@ export function PromptInput(props: PromptInputProps): React.JSX.Element {
 		setCommandOpen(false);
 		setRunModeOpen(false);
 		setThinkingOpen(false);
+		setSendModeOpen(false);
 		setModelOpen(true);
 		const cur = model ? `${model.provider}/${model.modelId}` : undefined;
 		setModelActive(modelItems.findIndex((it) => it.value === cur));
@@ -492,10 +534,15 @@ export function PromptInput(props: PromptInputProps): React.JSX.Element {
 			if (location.search !== renderedSearch) return;
 			const search = location.search;
 			if (value)
-				void api.setThinking(value as never).catch((err) => {
+				void updatePreferences(
+					{ thinkingLevel: value as ThinkingLevel },
+					() => location.search === search,
+					() => api.setThinking(value as ThinkingLevel),
+				).catch((err) => {
 					if (location.search === search) showError(err);
 				});
 			setThinkingOpen(false);
+			setSendModeOpen(false);
 			setThinkingActive(0);
 			rootRef.current?.focus();
 		},
@@ -508,10 +555,12 @@ export function PromptInput(props: PromptInputProps): React.JSX.Element {
 		setRunModeOpen(false);
 		setModelOpen(false);
 		setThinkingOpen(true);
+		setSendModeOpen(false);
 		setThinkingActive(thinkingItems.findIndex((it) => it.value === thinkingLevel));
 	}, [thinkingItems, thinkingLevel]);
 
 	const openFileMenu = useCallback((): void => {
+		setSendModeOpen(false);
 		if (!projectId) return; // 无项目不提供文件引用
 		setCommandOpen(false);
 		setRunModeOpen(false);
@@ -802,6 +851,7 @@ export function PromptInput(props: PromptInputProps): React.JSX.Element {
 			setRunModeOpen(false);
 			setModelOpen(false);
 			setThinkingOpen(false);
+			setSendModeOpen(false);
 		};
 		document.addEventListener("mousedown", onPointerDown);
 		return () => document.removeEventListener("mousedown", onPointerDown);
@@ -820,7 +870,11 @@ export function PromptInput(props: PromptInputProps): React.JSX.Element {
 	}, [insertChipAtCaret]);
 
 	return (
-		<div className="shrink-0 px-4 pb-4 pt-2 max-md:pb-[max(0.75rem,env(safe-area-inset-bottom))] max-md:px-2.5">
+		<fieldset
+			aria-label="消息输入区"
+			className="m-0 min-w-0 shrink-0 border-0 px-4 pb-4 pt-2 max-md:pb-[max(0.75rem,env(safe-area-inset-bottom))] max-md:px-2.5"
+		>
+			<QueueBar key={renderedSearch} />
 			<div
 				ref={inputWrapRef}
 				className={[
@@ -863,7 +917,13 @@ export function PromptInput(props: PromptInputProps): React.JSX.Element {
 						suppressContentEditableWarning
 						role="textbox"
 						aria-multiline="true"
-						data-placeholder={isSwitchingSession ? "会话切换中，请稍后输入" : "给助手发消息"}
+						data-placeholder={
+							isSwitchingSession
+								? "会话切换中，请稍后输入"
+								: isRunning && behavior === "followUp"
+									? "继续输入，回车加入待发送队列"
+									: "给助手发消息"
+						}
 						onInput={handleInput}
 						onKeyDown={handleKeyDown}
 						onCompositionStart={() => {
@@ -881,7 +941,7 @@ export function PromptInput(props: PromptInputProps): React.JSX.Element {
 						className="prompt-editor w-full resize-none bg-transparent text-[15px] leading-6 text-[var(--text-base)] outline-none max-h-[200px] max-md:max-h-[35dvh] overflow-y-auto"
 					/>
 				</div>
-				<div className="relative flex items-center justify-between px-3 pb-2.5 pt-1">
+				<div className="relative flex items-end justify-between gap-2 px-3 pb-2.5 pt-1">
 					<ModelSelectorPopover
 						open={runModeOpen}
 						loading={false}
@@ -895,15 +955,15 @@ export function PromptInput(props: PromptInputProps): React.JSX.Element {
 						onQueryChange={setRunModeQuery}
 						onHover={setRunModeActive}
 						searchPlaceholder="搜索模式…"
+						onClose={() => setRunModeOpen(false)}
 						loadingText="加载模式中…"
 						emptyText="无匹配模式"
 					/>
-					<div className="flex items-center gap-0.5">
+					<div className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5">
 						{/* 模型选择（ModelSelectorPopover） */}
 						<button
 							type="button"
 							onClick={openModelSelect}
-							disabled={!hasSession || isSwitchingSession}
 							className="flex h-6 items-center gap-1 rounded-md px-2 text-[11px] text-[var(--text-muted)] transition-colors hover:bg-[var(--overlay-hover)]"
 							title="选择模型"
 						>
@@ -912,7 +972,7 @@ export function PromptInput(props: PromptInputProps): React.JSX.Element {
 						{modelOpen && (
 							<ModelSelectorPopover
 								open={modelOpen}
-								loading={false}
+								loading={modelsLoading}
 								items={modelItems}
 								selectedValue={model ? `${model.provider}/${model.modelId}` : undefined}
 								query={modelQuery}
@@ -921,15 +981,21 @@ export function PromptInput(props: PromptInputProps): React.JSX.Element {
 								onQueryChange={setModelQuery}
 								onHover={setModelActive}
 								searchPlaceholder="搜索模型…"
+								onClose={() => setModelOpen(false)}
 								loadingText="加载模型中…"
-								emptyText="无匹配模型"
+								emptyText={
+									modelsError
+										? `加载失败：${modelsError}`
+										: modelQuery
+											? "无匹配模型"
+											: "暂无可用模型，请先在设置中配置"
+								}
 							/>
 						)}
 						{/* 思考强度（ModelSelectorPopover） */}
 						<button
 							type="button"
 							onClick={openThinkingSelect}
-							disabled={!hasSession || isSwitchingSession}
 							className="flex h-6 items-center gap-1 rounded-md px-2 text-[11px] text-[var(--text-muted)] transition-colors hover:bg-[var(--overlay-hover)]"
 							title="选择思考强度"
 						>
@@ -939,7 +1005,7 @@ export function PromptInput(props: PromptInputProps): React.JSX.Element {
 							<ModelSelectorPopover
 								open={thinkingOpen}
 								loading={false}
-								items={thinkingItems}
+								items={!hasSession && !model ? [] : thinkingItems}
 								selectedValue={thinkingLevel}
 								query={thinkingQuery}
 								activeIndex={thinkingActive}
@@ -947,20 +1013,55 @@ export function PromptInput(props: PromptInputProps): React.JSX.Element {
 								onQueryChange={setThinkingQuery}
 								onHover={setThinkingActive}
 								searchPlaceholder="搜索…"
+								onClose={() => setThinkingOpen(false)}
 								loadingText=""
-								emptyText="无匹配"
+								emptyText={
+									!hasSession && !model
+										? "请先选择模型，再设置思考强度"
+										: "当前模型没有匹配的思考档位"
+								}
 							/>
 						)}
 						<button
 							type="button"
+							title="选择发送模式"
+							className="flex h-6 items-center gap-1 rounded-md px-2 text-[11px] text-[var(--text-muted)] transition-colors hover:bg-[var(--overlay-hover)]"
+							onClick={() => {
+								setModelOpen(false);
+								setThinkingOpen(false);
+								setRunModeOpen(false);
+								setMentionOpen(false);
+								setCommandOpen(false);
+								setSendModeQuery("");
+								setSendModeActive(SEND_MODES.findIndex((item) => item.value === behavior));
+								setSendModeOpen(!sendModeOpen);
+							}}
+						>
+							<span>发送：{behavior === "followUp" ? "排队" : "直接"}</span>
+						</button>
+						<ModelSelectorPopover
+							open={sendModeOpen}
+							loading={false}
+							items={sendModeItems}
+							selectedValue={behavior}
+							query={sendModeQuery}
+							activeIndex={sendModeActive}
+							onQueryChange={setSendModeQuery}
+							onHover={setSendModeActive}
+							onSelect={(value) => {
+								if (value === "steer" || value === "followUp") setBehavior(value);
+								setSendModeOpen(false);
+								rootRef.current?.focus();
+							}}
+							onClose={() => setSendModeOpen(false)}
+							searchPlaceholder="搜索发送模式…"
+							emptyText="无匹配发送模式"
+						/>
+						<button
+							type="button"
 							onClick={openRunModeSelect}
-							disabled={runModeBusy}
 							className="flex h-6 items-center gap-1 rounded-md px-2 text-[11px] text-[var(--text-muted)] transition-colors hover:bg-[var(--overlay-hover)] disabled:text-[var(--text-faint)] disabled:cursor-not-allowed disabled:hover:bg-transparent"
-							title={
-								runModeBusy
-									? "会话运行中，暂不能切换执行模式"
-									: "选择执行模式（空闲会话立即热切换，新会话直接生效）"
-							}
+							title="选择运行模式"
 						>
 							<ShieldCheckIcon className="size-3" />
 							<span>{runModeLabel}</span>
@@ -977,49 +1078,37 @@ export function PromptInput(props: PromptInputProps): React.JSX.Element {
 							<span>文件</span>
 						</button>
 					</div>
-					{isRunning && (
-						<select
-							aria-label="排队切入方式"
-							value={behavior}
-							onChange={(e) => setBehavior(e.target.value as typeof behavior)}
-							className="text-xs bg-[var(--bg-layer-02)] rounded px-2 py-1"
-						>
-							<option value="followUp">任务结束后发送（默认）</option>
-							<option value="steer">不停止当前请求，尽快切入</option>
-						</select>
-					)}
-					{isRunning && (
-						<button
-							type="button"
-							onClick={submit}
-							disabled={!hasText || isSwitchingSession || isSubmitting}
-							className="text-xs px-2 py-1 disabled:opacity-50"
-						>
-							排队发送
-						</button>
-					)}
-					{isRunning ? (
-						<button
-							type="button"
-							onClick={onInterrupt}
-							className="size-8 flex items-center justify-center rounded-full bg-[var(--grey-100)] text-white transition-all hover:bg-red-500 hover:scale-105 active:scale-95"
-							title="中断当前轮（Esc）"
-						>
-							<SquareIcon className="size-3 fill-current" />
-						</button>
-					) : (
-						<button
-							type="button"
-							onClick={submit}
-							disabled={!hasText || isSwitchingSession || isSubmitting}
-							className="size-8 flex items-center justify-center rounded-full bg-[var(--grey-100)] text-white transition-all hover:bg-[var(--grey-50)] hover:scale-105 active:scale-95 disabled:bg-[var(--bg-layer-02)] disabled:text-[var(--text-faint)] disabled:hover:scale-100 disabled:cursor-not-allowed"
-							title={isSwitchingSession ? "会话切换中，请稍候" : "发送（Enter）"}
-						>
-							<ArrowUpIcon className="size-4" strokeWidth={2.5} />
-						</button>
-					)}
+					<div className="flex shrink-0 items-center gap-1.5">
+						{(!isRunning || hasText) && (
+							<button
+								type="button"
+								onClick={submit}
+								disabled={!hasText || isSwitchingSession || isSubmitting}
+								className="size-8 flex items-center justify-center rounded-full bg-[var(--button-face)] text-[var(--button-ink)] transition-all hover:opacity-85 active:scale-95 disabled:bg-[var(--bg-layer-02)] disabled:text-[var(--text-faint)] disabled:cursor-not-allowed"
+								title={
+									isSwitchingSession
+										? "会话切换中，请稍候"
+										: isRunning && behavior === "followUp"
+											? "加入待发送队列（Enter）"
+											: "发送（Enter）"
+								}
+							>
+								<ArrowUpIcon className="size-4" strokeWidth={2.5} />
+							</button>
+						)}
+						{isRunning && (
+							<button
+								type="button"
+								onClick={onInterrupt}
+								className="size-8 flex items-center justify-center rounded-full bg-[var(--button-face)] text-[var(--button-ink)] transition-all hover:bg-red-500 hover:scale-105 active:scale-95"
+								title="中断当前轮（Esc）"
+							>
+								<SquareIcon className="size-3 fill-current" />
+							</button>
+						)}
+					</div>
 				</div>
 			</div>
-		</div>
+		</fieldset>
 	);
 }

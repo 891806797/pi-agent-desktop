@@ -1,5 +1,6 @@
 import type { SequencedEvent, SSEEvent } from "@pi-agent/common";
 import { RESYNC_MESSAGE } from "@pi-agent/common";
+import { type EventSourceTransport, openEventSource } from "./shared-event-source";
 
 const WATCHDOG_MS = 40_000;
 export interface SseHandlers {
@@ -7,7 +8,7 @@ export interface SseHandlers {
 	onResync: () => void;
 }
 export class ChatSseClient {
-	private es: EventSource | null = null;
+	private es: EventSourceTransport | null = null;
 	private watchdog: ReturnType<typeof setTimeout> | null = null;
 	private closed = false;
 	private lastSeq: number;
@@ -16,16 +17,14 @@ export class ChatSseClient {
 		private workspace: string,
 		private handlers: SseHandlers,
 		sinceSeq = 0,
+		private epoch?: string,
 	) {
 		this.lastSeq = sinceSeq;
 	}
 	start(): void {
 		if (this.closed) return;
 		this.stopStream();
-		const es = new EventSource(
-			`/api/sessions/${encodeURIComponent(this.sessionId)}/events?workspace=${encodeURIComponent(this.workspace)}&sinceSeq=${this.lastSeq}`,
-		);
-		this.es = es;
+		let es: EventSourceTransport;
 		const recover = () => {
 			if (this.es !== es || this.closed) return;
 			this.stopStream();
@@ -49,6 +48,9 @@ export class ChatSseClient {
 			"message_end",
 			"usage",
 			"session_metrics",
+			"run_issue",
+			"extension_ui",
+			"extension_notify",
 			"system_message",
 			"approval_request",
 			"approval_settled",
@@ -63,6 +65,11 @@ export class ChatSseClient {
 			"query_closed",
 			"heartbeat",
 		] as const;
+		es = openEventSource(
+			`/api/sessions/${encodeURIComponent(this.sessionId)}/events?workspace=${encodeURIComponent(this.workspace)}&sinceSeq=${this.lastSeq}${this.epoch ? `&epoch=${encodeURIComponent(this.epoch)}` : ""}`,
+			names,
+		);
+		this.es = es;
 		for (const name of names)
 			es.addEventListener(name, (e) => {
 				if (this.es !== es || this.closed) return;

@@ -1,16 +1,25 @@
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { PendingPayload } from "@pi-agent/common";
+import { type DefaultSettings, DefaultSettingsSchema, RunIssueSchema } from "@pi-agent/common";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { AppError } from "@/core/app-error";
 import { openRuntimeDatabase } from "@/db";
-import { sessionRuntime } from "@/db/schema";
+import { sessionActions, sessionRuntime, sessionSettings } from "@/db/schema";
 
 type NativeResult = Extract<AgentSessionEvent, { type: "tool_execution_end" }>["result"];
 const approval = z.object({
 	request: z.object({
 		requestId: z.string(),
-		kind: z.enum(["tool_permission", "ask_question", "ui_select", "ui_confirm", "ui_input"]),
+		kind: z.enum([
+			"tool_permission",
+			"ask_question",
+			"ui_select",
+			"ui_confirm",
+			"ui_input",
+			"ui_editor",
+		]),
+		origin: z.object({ toolCallId: z.string(), ordinal: z.int().min(0) }).optional(),
 		payload: z.custom<PendingPayload>((value) => value !== null && typeof value === "object"),
 		createdAt: z.number(),
 		expiresAt: z.number().optional(),
@@ -67,6 +76,9 @@ const checkpoint = z.object({
 	inputs: z.array(input),
 	approvals: z.array(approval),
 	tools: z.array(tool),
+	issue: RunIssueSchema.optional(),
+	attemptId: z.string().optional(),
+	intent: z.object({ actionId: z.string(), attemptId: z.string(), issueId: z.string() }).optional(),
 });
 export type RuntimeCheckpoint = z.infer<typeof checkpoint>;
 export type RecoveryInput = RuntimeCheckpoint["inputs"][number];
@@ -77,6 +89,35 @@ export class RuntimeStore {
 	private db: ReturnType<typeof openRuntimeDatabase>;
 	constructor(file: string) {
 		this.db = openRuntimeDatabase(file);
+	}
+	readSettings(userId: string, sessionId: string): DefaultSettings | undefined {
+		const row = this.db
+			.select()
+			.from(sessionSettings)
+			.where(and(eq(sessionSettings.userId, userId), eq(sessionSettings.sessionId, sessionId)))
+			.get();
+		if (!row) return;
+		try {
+			return DefaultSettingsSchema.parse(JSON.parse(row.settings));
+		} catch {
+			throw new AppError("AGENT_ERROR", "会话配置损坏，已保留原记录，请检查后再恢复");
+		}
+	}
+	writeSettings(userId: string, sessionId: string, settings: DefaultSettings) {
+		this.db
+			.insert(sessionSettings)
+			.values({ userId, sessionId, settings: JSON.stringify(settings) })
+			.onConflictDoUpdate({
+				target: [sessionSettings.userId, sessionSettings.sessionId],
+				set: { settings: JSON.stringify(settings) },
+			})
+			.run();
+	}
+	forgetSettings(userId: string, sessionId: string) {
+		this.db
+			.delete(sessionSettings)
+			.where(and(eq(sessionSettings.userId, userId), eq(sessionSettings.sessionId, sessionId)))
+			.run();
 	}
 	read(userId: string, sessionId: string): RuntimeCheckpoint | undefined {
 		const row = this.db
@@ -109,6 +150,28 @@ export class RuntimeStore {
 		this.db
 			.delete(sessionRuntime)
 			.where(and(eq(sessionRuntime.userId, userId), eq(sessionRuntime.sessionId, sessionId)))
+			.run();
+	}
+	action(userId: string, actionId: string): string | undefined {
+		return this.db
+			.select({ state: sessionActions.state })
+			.from(sessionActions)
+			.where(and(eq(sessionActions.userId, userId), eq(sessionActions.actionId, actionId)))
+			.get()?.state;
+	}
+	claimAction(value: RuntimeCheckpoint, actionId: string, signature: string): void {
+		this.db.transaction(() => {
+			this.db
+				.insert(sessionActions)
+				.values({ userId: value.userId, sessionId: value.sessionId, actionId, state: signature })
+				.run();
+			this.write(value);
+		});
+	}
+	forgetActions(userId: string, sessionId: string): void {
+		this.db
+			.delete(sessionActions)
+			.where(and(eq(sessionActions.userId, userId), eq(sessionActions.sessionId, sessionId)))
 			.run();
 	}
 	list(): Array<{ userId: string; sessionId: string }> {

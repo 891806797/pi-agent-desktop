@@ -1,6 +1,9 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { openRuntimeDatabase } from "../../src/db";
+import { users as usersTable } from "../../src/db/schema";
+import { extensionBrowserHarness } from "./extension-browser-harness";
 import { waitForServer } from "./server-startup";
 
 // 仅供 browser_acceptance.py：编译版 + 临时数据 + 本机 Provider，不读取开发环境的密钥。
@@ -30,6 +33,11 @@ const provider = Bun.serve({
 							.join("")
 					: "";
 		const afterTool = body.messages.slice(lastUser + 1).some((message) => message.role === "tool");
+		if (text === "browser-fail")
+			return Response.json(
+				{ error: { message: "browser fixture failure", type: "invalid_request_error" } },
+				{ status: 400 },
+			);
 		const tool =
 			!afterTool && text === "browser-permission"
 				? {
@@ -77,7 +85,22 @@ const provider = Bun.serve({
 									{ index: 0, id: `browser_${tool.name}`, type: "function", function: tool },
 								],
 							});
-						else emit({ role: "assistant", content: "浏览器验收已完成" });
+						else if (text === "browser-scroll") {
+							emit({
+								role: "assistant",
+								content: Array.from(
+									{ length: 100 },
+									(_, index) => `流式滚动 ${index}：测试消息跟随。\n\n`,
+								).join(""),
+							});
+							await new Promise<void>((resolve) => {
+								releases.add(resolve);
+							});
+							for (let index = 100; index < 240; index++) {
+								emit({ content: `流式滚动 ${index}：持续追加内容。\n\n` });
+								await Bun.sleep(12);
+							}
+						} else emit({ role: "assistant", content: "浏览器验收已完成" });
 						emit({}, tool ? "tool_calls" : "stop");
 						controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
 						controller.close();
@@ -129,10 +152,13 @@ let stopped!: () => void;
 const stopping = new Promise<void>((resolve) => {
 	stopped = resolve;
 });
+const extensionHarness = extensionBrowserHarness();
 const control = Bun.serve({
 	port: 0,
 	hostname: "127.0.0.1",
 	async fetch(request) {
+		const extensionResponse = await extensionHarness.handle(request);
+		if (extensionResponse) return extensionResponse;
 		const path = new URL(request.url).pathname;
 		if (path === "/restart") {
 			child.kill("SIGKILL");
@@ -141,9 +167,9 @@ const control = Bun.serve({
 			return Response.json({ base });
 		}
 		if (path === "/prepare") {
-			const users = JSON.parse(readFileSync(join(dataDir, "users.json"), "utf8")) as Array<{
-				id: string;
-			}>;
+			const database = openRuntimeDatabase(join(dataDir, "runtime.sqlite"));
+			const users = database.select({ id: usersTable.id }).from(usersTable).all();
+			database.$client.close(true);
 			const agentDir = join(dataDir, "users", users[0]!.id, "agent");
 			mkdirSync(agentDir, { recursive: true });
 			writeFileSync(
@@ -172,6 +198,7 @@ const control = Bun.serve({
 			releases.clear();
 		}
 		if (path === "/stop") {
+			extensionHarness.dispose();
 			setTimeout(() => {
 				child.kill();
 				provider.stop(true);

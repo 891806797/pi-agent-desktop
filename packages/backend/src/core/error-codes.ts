@@ -11,6 +11,8 @@ export const ERROR_CODES = {
 	BAD_REQUEST: { status: 400, message: "请求不合法" },
 	SESSION_EXISTS: { status: 409, message: "会话已存在" },
 	SESSION_BUSY: { status: 409, message: "会话正忙" },
+	SESSION_DELETED: { status: 410, message: "会话已删除或正在删除" },
+	CURSOR_EXPIRED: { status: 409, message: "会话列表已更新，请重新加载" },
 	QUOTA_EXCEEDED: { status: 429, message: "活跃会话数超出配额" },
 	WORKSPACE_DENIED: { status: 403, message: "工作空间不在白名单内" },
 	MODEL_NOT_FOUND: { status: 404, message: "模型不存在或未配置认证" },

@@ -7,6 +7,7 @@ import { env } from "../src/env";
 import { captureQueuedImages } from "../src/modules/agent/queue-operations";
 import { RuntimeStore } from "../src/modules/agent/runtime-store";
 import { SessionRegistry } from "../src/modules/agent/session-registry";
+import { configureTestModels } from "./helpers";
 
 const originalData = env.dataDir;
 afterEach(() => {
@@ -20,6 +21,7 @@ test("failed approval persistence retains the card and cannot leak an uncommitte
 	mkdirSync(cwd);
 	const registry = new SessionRegistry();
 	try {
+		configureTestModels("io-user");
 		const ctx = await registry.create({ userId: "io-user", username: "io" }, cwd);
 		ctx.recovery!.onEvent({ type: "agent_start" });
 		void ctx.approvals.create("ui_confirm", "io", { title: "confirm", message: "continue?" });
@@ -71,6 +73,7 @@ async function interrupted(
 	const cwd = join(dir, "project");
 	mkdirSync(cwd);
 	const user = { userId: "recovery-user", username: "recovery" };
+	configureTestModels(user.userId);
 	const first = new SessionRegistry();
 	const next = new SessionRegistry();
 	const ctx = await first.create(user, cwd);
@@ -212,6 +215,7 @@ test("native SDK recovery consumes identical queued text with each input's own i
 		},
 	});
 	const user = { userId: "images-user", username: "images" };
+	configureTestModels(user.userId);
 	const agentDir = join(env.dataDir, "users", user.userId, "agent");
 	mkdirSync(agentDir, { recursive: true });
 	writeFileSync(

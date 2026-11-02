@@ -20,12 +20,14 @@ export class SessionConnection {
 				ws: string,
 				handlers: ConstructorParameters<typeof ChatSseClient>[2],
 				seq: number,
-			) => new ChatSseClient(sid, ws, handlers, seq),
+				epoch?: string,
+			) => new ChatSseClient(sid, ws, handlers, seq, epoch),
 			load: (h: HistoryResponse) => useChatStore.getState().loadSnapshot(h),
 			event: useChatStore.getState().applyEvent,
 			error: (err: unknown) =>
 				useChatStore.setState({
 					isSwitchingSession: false,
+					connectionError: true,
 					lastError: err instanceof Error ? err.message : String(err),
 				}),
 		},
@@ -77,6 +79,7 @@ export class SessionConnection {
 				},
 			},
 			h.seq,
+			h.epoch,
 		);
 		this.client.start();
 	}

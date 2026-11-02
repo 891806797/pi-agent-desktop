@@ -11,20 +11,19 @@ export const systemRoutes = new Elysia({ prefix: "/api" })
 	.use(authContext)
 	.get("/health", () => ok(healthInfo()))
 	.get("/workspaces", ({ user }) => {
-		requireUser(user);
-		return ok({ workspaces: system.workspaceList() });
+		return ok({ workspaces: system.workspaceList(requireUser(user).userId) });
 	})
 	.post("/workspaces", ({ body, user }) => {
-		requireUser(user);
+		const u = requireUser(user);
 		const input = vh(AddWorkspaceInput, body);
-		return ok({ workspace: system.registerWorkspace(input.path) });
+		return ok({ workspace: system.registerWorkspace(u.userId, input.path) });
 	})
 	.get("/fs/dirs", ({ query, user }) => {
 		requireUser(user);
 		return ok(system.listDirectories(vh(ListDirectoriesQuery, query).path));
 	})
 	.get("/files", ({ query, user }) => {
-		requireUser(user);
+		const u = requireUser(user);
 		const input = vh(FilesQuery, query);
-		return ok({ files: system.listFiles(input.dir, input.q) });
+		return ok({ files: system.listFiles(u.userId, input.dir, input.q) });
 	});

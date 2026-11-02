@@ -22,9 +22,11 @@ import type {
 	SessionMetrics,
 	ThinkingLevel,
 } from "@pi-agent/common";
+import { type ExtensionUISnapshot, emptyExtensionUI } from "@pi-agent/common";
 import { create } from "zustand";
 
 interface ChatStore {
+	epoch: string;
 	sessionId: string | null;
 	closed: { reason: SessionCloseReason } | null;
 	status: AgentStatus;
@@ -42,6 +44,10 @@ interface ChatStore {
 	isSwitchingSession: boolean;
 	lastError: string | null;
 	metrics: SessionMetrics | null;
+	issue: import("@pi-agent/common").RunIssue | null;
+	connectionError: boolean;
+	ui: ExtensionUISnapshot;
+	notifications: Array<{ id: string; message: string; type: "info" | "warning" | "error" }>;
 
 	applyEvent: (ev: SequencedEvent) => void;
 	loadSnapshot: (snapshot: HistoryResponse) => void;
@@ -53,8 +59,13 @@ interface ChatStore {
 }
 
 export const useChatStore = create<ChatStore>((set, get) => ({
+	epoch: "",
 	sessionId: null,
 	closed: null,
+	issue: null,
+	connectionError: false,
+	ui: emptyExtensionUI(),
+	notifications: [],
 	status: "idle",
 	messages: [],
 	messageIndex: new Map(),
@@ -91,6 +102,16 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 			}));
 
 		switch (ev.event) {
+			case "extension_ui":
+				return set_({ ui: ev.data });
+			case "extension_notify":
+				return set_({
+					notifications: state.notifications.some((item) => item.id === ev.data.id)
+						? state.notifications
+						: [...state.notifications, ev.data].slice(-128),
+				});
+			case "run_issue":
+				return set_({ issue: ev.data.issue });
 			case "session_metrics":
 				return set_({ metrics: ev.data });
 			case "system_message": {
@@ -395,6 +416,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 						toolUsePos.set(b.toolCallId, { messageId: m.id, blockIndex: i });
 				});
 		set({
+			epoch: h.epoch ?? "",
 			sessionId: h.sessionId,
 			closed: null,
 			messages: h.messages,
@@ -410,6 +432,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 			runMode: h.runMode,
 			isCompacting: h.isCompacting,
 			metrics: h.metrics,
+			issue: h.issue ?? null,
+			connectionError: false,
+			ui: h.ui ?? emptyExtensionUI(),
+			notifications: [],
 			isSwitchingSession: false,
 			lastError: null,
 		});
@@ -420,6 +446,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 	setThinking: (thinkingLevel) => set({ thinkingLevel }),
 	reset: () =>
 		set({
+			epoch: "",
 			sessionId: null,
 			closed: null,
 			runMode: "standard",
@@ -437,6 +464,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 			isSwitchingSession: false,
 			lastError: null,
 			metrics: null,
+			issue: null,
+			connectionError: false,
+			ui: emptyExtensionUI(),
+			notifications: [],
 		}),
 }));
 

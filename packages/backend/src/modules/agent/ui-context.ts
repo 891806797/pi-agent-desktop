@@ -1,41 +1,61 @@
 /**
  * 当前白名单扩展使用的 Web 对话框桥接，统一走 ApprovalManager 的生命周期。
- * 此处不是完整的扩展 UI 宿主：展示型 API 尚未接入，磁盘扩展保持禁用。
+ * 声明式状态和文字展示由 SessionUI 管理，磁盘扩展保持禁用。
  * custom 等依赖终端组件工厂的 API 不能直接迁入浏览器。
  */
 
 import type { ExtensionUIContext, ExtensionUIDialogOptions } from "@earendil-works/pi-coding-agent";
 import type { ApprovalManager } from "./approval-manager";
+import type { SessionUI } from "./session-ui";
 
-export function makeWebUIContext(approvals: ApprovalManager): ExtensionUIContext {
+export function makeWebUIContext(
+	approvals: ApprovalManager,
+	display?: SessionUI,
+): ExtensionUIContext {
+	const dialog = (
+		kind: Parameters<ApprovalManager["create"]>[0],
+		payload: Parameters<ApprovalManager["create"]>[2],
+		opts?: ExtensionUIDialogOptions,
+	) =>
+		display
+			? display.dialog(kind, payload, opts)
+			: approvals.create(kind, crypto.randomUUID(), payload, opts);
 	const ui = {
 		select: async (title: string, options: string[], opts?: ExtensionUIDialogOptions) => {
-			const r = await approvals.create("ui_select", crypto.randomUUID(), { title, options }, opts);
+			const r = await dialog("ui_select", { title, options }, opts);
 			return typeof r === "string" ? r : undefined;
 		},
 		confirm: async (title: string, message: string, opts?: ExtensionUIDialogOptions) => {
-			const r = await approvals.create("ui_confirm", crypto.randomUUID(), { title, message }, opts);
+			const r = await dialog("ui_confirm", { title, message }, opts);
 			return r === true;
 		},
 		input: async (title: string, placeholder?: string, opts?: ExtensionUIDialogOptions) => {
-			const r = await approvals.create(
-				"ui_input",
-				crypto.randomUUID(),
-				{ title, placeholder },
-				opts,
-			);
+			const r = await dialog("ui_input", { title, placeholder }, opts);
 			return typeof r === "string" ? r : undefined;
 		},
-		editor: async () => undefined,
+		editor: (title: string, prefill?: string) =>
+			display?.editor(title, prefill) ?? Promise.resolve(undefined),
 		custom: async () => undefined as never,
-		notify: () => {},
+		notify: (message: string, type?: "info" | "warning" | "error") =>
+			display?.notify(message, type),
 		onTerminalInput: () => () => {},
-		setStatus: () => {},
-		setWorkingMessage: () => {},
-		setWorkingVisible: () => {},
+		setStatus: (key: string, text?: string) => display?.setStatus(key, text),
+		setWorkingMessage: (message?: string) => display?.setWorkingMessage(message),
+		setWorkingVisible: (visible: boolean) => display?.setWorkingVisible(visible),
 		setWorkingIndicator: () => {},
 		setHiddenThinkingLabel: () => {},
-		setWidget: () => {},
+		setWidget: (
+			key: string,
+			content: unknown,
+			options?: { placement?: "aboveEditor" | "belowEditor" },
+		) => {
+			if (
+				content !== undefined &&
+				(!Array.isArray(content) || !content.every((line) => typeof line === "string"))
+			)
+				throw new Error("Web 只支持文字 widget，不支持终端组件 factory");
+			display?.setWidget(key, content as string[] | undefined, options?.placement);
+		},
 		setFooter: () => {},
 		setHeader: () => {},
 		setTitle: () => {},

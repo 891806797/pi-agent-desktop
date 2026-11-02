@@ -72,7 +72,7 @@ export function MentionPopover({
 						onKeyDown={onSearchKeyDown}
 						placeholder="搜索文件…"
 						spellCheck={false}
-						className="h-7 w-full rounded-md border border-[var(--border-base)] bg-[var(--bg-layer-01)] px-2 text-[13px] text-[var(--text-base)] outline-none focus:border-[var(--grey-400)]"
+						className="h-7 w-full rounded-md border border-[var(--border-base)] bg-[var(--bg-layer-01)] px-2 text-[13px] text-[var(--text-base)] outline-none focus:border-[var(--border-strong)]"
 					/>
 				</div>
 			)}

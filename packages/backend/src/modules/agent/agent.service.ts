@@ -7,19 +7,21 @@ import type {
 	ApprovalActionInput,
 	HistoryResponse,
 	PendingRequest,
+	RecoveryActionInput,
 	SendMessageInput,
 	SessionInfoResponse,
 	ThinkingLevel,
 } from "@pi-agent/common";
+import { EXTENSION_UI_LIMITS, utf8Length } from "@pi-agent/common";
 import { z } from "zod";
 import { AppError } from "@/core/app-error";
 import type { AuthUser } from "@/modules/auth/token";
 import { expandFileReferences } from "@/modules/system/file-references";
-import { writeSessionMeta } from "@/modules/system/paths";
 import { resolveWorkspaceB64 } from "@/modules/system/workspace-registry";
 import type { ApprovalManager } from "./approval-manager";
 import { listCommands } from "./commands";
 import { projectMessages } from "./history";
+import { configuredDefaultThinking, configuredModels } from "./model-config";
 import {
 	captureQueuedImages,
 	clearSessionQueue,
@@ -36,7 +38,8 @@ export function requireCtx(
 	sessionId: string,
 	workspaceB64?: string,
 ): SessionContext {
-	const cwd = workspaceB64 !== undefined ? resolveWorkspaceB64(workspaceB64) : undefined;
+	const cwd =
+		workspaceB64 !== undefined ? resolveWorkspaceB64(user.userId, workspaceB64) : undefined;
 	const ctx = registry.get(sessionId, user.userId, cwd);
 	if (!ctx) throw new AppError("NOT_FOUND", "会话不存在或未激活");
 	if (ctx.closing) throw new AppError("SESSION_BUSY", "会话正在关闭");
@@ -48,19 +51,47 @@ export async function openSession(
 	workspaceB64: string,
 	resumeSessionId?: string,
 ): Promise<{ sessionId: string; live: boolean }> {
-	const cwd = resolveWorkspaceB64(workspaceB64);
+	const cwd = resolveWorkspaceB64(user.userId, workspaceB64);
+	await registry.invalidateModelRuntime(user.userId);
 	if (resumeSessionId) {
 		const existing = registry.get(resumeSessionId, user.userId, cwd);
-		if (existing) return { sessionId: existing.sessionId, live: true };
+		if (existing) {
+			const runtime = await registry.modelRuntimeFor(user.userId);
+			const models = configuredModels(user.userId, runtime);
+			const current = existing.session.model;
+			const selected =
+				models.find((model) => model.provider === current?.provider && model.id === current.id) ??
+				models[0];
+			if (selected && JSON.stringify(selected) !== JSON.stringify(current))
+				await setModel(user, existing, selected.provider, selected.id);
+			return { sessionId: existing.sessionId, live: true };
+		}
 	}
 	const ctx = await registry.create(user, cwd, resumeSessionId);
 	return { sessionId: ctx.sessionId, live: true };
 }
 
+export async function recoverSession(
+	user: AuthUser,
+	sessionId: string,
+	workspaceB64: string,
+	input: RecoveryActionInput,
+) {
+	const cwd = resolveWorkspaceB64(user.userId, workspaceB64);
+	registry.catalog().assertAvailable(user.userId, sessionId);
+	const ctx =
+		registry.get(sessionId, user.userId, cwd) ?? (await registry.create(user, cwd, sessionId));
+	return queueTransaction(ctx, async () => {
+		registry.catalog().assertAvailable(user.userId, sessionId);
+		if (!ctx.recovery) throw new AppError("AGENT_ERROR", "恢复状态不可用");
+		return ctx.recovery.applyAction(input);
+	});
+}
+
 export function listSessions(user: AuthUser, workspaceB64?: string) {
 	return registry.listSessions(
 		user.userId,
-		workspaceB64 ? resolveWorkspaceB64(workspaceB64) : undefined,
+		workspaceB64 ? resolveWorkspaceB64(user.userId, workspaceB64) : undefined,
 	);
 }
 
@@ -79,6 +110,7 @@ export function getHistory(ctx: SessionContext): HistoryResponse {
 			projectMessages(messages, (message) => ctx.translator.messageId(message)),
 		),
 		seq: ctx.bus.currentSeq,
+		epoch: ctx.bus.epoch,
 	};
 }
 
@@ -96,6 +128,8 @@ export function sessionInfo(ctx: SessionContext): SessionInfoResponse {
 		queue: queueSnapshot(ctx),
 		pendingApprovals: ctx.approvals.pendingList(),
 		metrics: readSessionMetrics(ctx.session),
+		issue: ctx.recovery?.issue ?? null,
+		ui: ctx.ui?.snapshot,
 	};
 }
 
@@ -136,16 +170,17 @@ async function sendMessageUnlocked(
 					accepted = true;
 					resolve({ queued: disposition === "queued" });
 				};
-				const operation = ctx.recovery?.running
-					? ctx.session[input.behavior === "steer" ? "steer" : "followUp"](expanded, allImages, {
-							source: "rpc",
-						}).then(accept)
-					: ctx.session.prompt(expanded, {
-							streamingBehavior: input.behavior ?? "followUp",
-							source: "rpc",
-							...(allImages.length ? { images: allImages } : {}),
-							preflightResult: accept,
-						});
+				const operation =
+					ctx.recovery?.running || ctx.recovery?.blocked
+						? ctx.session[input.behavior === "steer" ? "steer" : "followUp"](expanded, allImages, {
+								source: "rpc",
+							}).then(accept)
+						: ctx.session.prompt(expanded, {
+								streamingBehavior: input.behavior ?? "followUp",
+								source: "rpc",
+								...(allImages.length ? { images: allImages } : {}),
+								preflightResult: accept,
+							});
 				void operation
 					.then(() => {
 						if (!accepted) {
@@ -167,6 +202,7 @@ async function sendMessageUnlocked(
 
 export async function abortRun(ctx: SessionContext): Promise<void> {
 	await queueTransaction(ctx, async () => {
+		ctx.interrupted = true;
 		ctx.recovery?.cancel();
 		clearSessionQueue(ctx);
 		ctx.approvals.rejectAll("运行已中止");
@@ -199,8 +235,15 @@ function doSettle(
 		if (request.kind === "tool_permission") invalid();
 		if (request.kind === "ui_confirm" && typeof input.data !== "boolean") invalid();
 		if (
-			(request.kind === "ui_input" || request.kind === "ui_select") &&
+			(request.kind === "ui_input" ||
+				request.kind === "ui_select" ||
+				request.kind === "ui_editor") &&
 			typeof input.data !== "string"
+		)
+			invalid();
+		if (
+			request.kind === "ui_editor" &&
+			utf8Length(input.data as string) > EXTENSION_UI_LIMITS.editorBytes
 		)
 			invalid();
 		if (
@@ -273,10 +316,15 @@ export async function setModel(
 ): Promise<void> {
 	await changeModelSettings(ctx, async () => {
 		const runtime = await registry.modelRuntimeFor(user.userId);
-		const model = runtime.getModel(provider, modelId);
+		const model = configuredModels(user.userId, runtime).find(
+			(model) => model.provider === provider && model.id === modelId,
+		);
 		if (!model) throw new AppError("MODEL_NOT_FOUND", `${provider}/${modelId} 不存在或未配置认证`);
 		if (ctx.closing) throw new AppError("SESSION_BUSY", "会话正在关闭");
+		const changed = ctx.session.model?.provider !== provider || ctx.session.model?.id !== modelId;
 		await ctx.session.setModel(model);
+		if (changed)
+			ctx.session.setThinkingLevel(configuredDefaultThinking(user.userId, provider, modelId));
 		ctx.bus.publish({
 			event: "model_changed",
 			data: {
@@ -285,12 +333,14 @@ export async function setModel(
 				availableThinkingLevels: ctx.session.getAvailableThinkingLevels(),
 			},
 		});
+		ctx.persistSettings?.();
 	});
 }
 
 export function setThinking(ctx: SessionContext, level: ThinkingLevel): Promise<void> {
 	return changeModelSettings(ctx, () => {
 		ctx.session.setThinkingLevel(level);
+		ctx.persistSettings?.();
 		// SDK 广播按模型能力调整后的实际值，不再用请求值覆盖。
 	});
 }
@@ -298,8 +348,7 @@ export function setThinking(ctx: SessionContext, level: ThinkingLevel): Promise<
 export function setRunMode(ctx: SessionContext, mode: "auto" | "standard" | "safe" | "plan"): void {
 	// holder.onChange 自动广播 run_mode 事件
 	ctx.runMode.set(mode);
-	// 持久化到 meta sidecar，跨重启恢复
-	writeSessionMeta(ctx.userId, ctx.sessionId, { runMode: mode });
+	ctx.persistSettings?.();
 }
 
 export function clearQueue(ctx: SessionContext): Promise<void> {
@@ -336,7 +385,7 @@ export async function closeSession(
 	const ctx = registry.get(
 		sessionId,
 		user.userId,
-		workspaceB64 ? resolveWorkspaceB64(workspaceB64) : undefined,
+		workspaceB64 ? resolveWorkspaceB64(user.userId, workspaceB64) : undefined,
 	);
 	if (ctx) await registry.close(sessionId, "user_close");
 }

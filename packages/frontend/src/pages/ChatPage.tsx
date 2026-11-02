@@ -4,22 +4,27 @@
 
 import type { WorkspaceInfo } from "@pi-agent/common";
 import { MenuIcon } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 import { ChatMessageList } from "@/components/chat/ChatMessageList";
 import { DirectoryPicker } from "@/components/layout/DirectoryPicker";
 import { ProjectRail } from "@/components/layout/ProjectRail";
 import { ResizeHandle } from "@/components/layout/ResizeHandle";
 import { SessionMetricsBar } from "@/components/layout/SessionMetricsBar";
-import { SidebarPanel } from "@/components/layout/SidebarPanel";
+import { SidebarPanel, sessionLabel } from "@/components/layout/SidebarPanel";
+import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { useChatAgent } from "@/hooks/useChatAgent";
+import { resolveProjectChatPath, useChatAgent } from "@/hooks/useChatAgent";
 import { useChatAgentApi } from "@/hooks/useChatAgentApi";
-import { addWorkspace, listWorkspaces } from "@/lib/api";
+import { addWorkspace, deleteSession, listWorkspaces } from "@/lib/api";
 import { useChatStore } from "@/stores/chat";
+import { needsAttention, useSessionsStore } from "@/stores/sessions";
 
 const DEFAULT_SIDE = 344;
-const MIN_SIDE = 244;
+const MIN_SIDE = 280;
+const MAX_SIDE = 520;
+const sidebarMax = () => Math.max(MIN_SIDE, Math.min(MAX_SIDE, window.innerWidth - 448));
 
 function loadSide(): number {
 	const v = Number(localStorage.getItem("pi-agent:sidebar-width"));
@@ -32,11 +37,23 @@ export function ChatPage() {
 	const location = useLocation();
 	const status = useChatStore((s) => s.status);
 	const metrics = useChatStore((s) => s.metrics);
+	const directory = useSessionsStore((state) => state.rows);
+	const removed = useSessionsStore((state) => state.removed);
+	const [attentionOpen, setAttentionOpen] = useState(false);
+	const [retryingDelete, setRetryingDelete] = useState<string | null>(null);
+	const attention = Object.values(directory).filter(needsAttention);
 
 	const [projects, setProjects] = useState<WorkspaceInfo[]>([]);
 	const activeEncoded = new URLSearchParams(location.search).get("workspace");
+	const currentSid = new URLSearchParams(location.search).get("sessionId");
+	const projectRequest = useRef(0);
+	useEffect(() => {
+		if (currentSid && removed[currentSid])
+			navigate(`/chat?workspace=${activeEncoded}`, { replace: true });
+	}, [currentSid, removed, activeEncoded, navigate]);
 	const [side, setSide] = useState(loadSide);
-	const [maxSide, setMaxSide] = useState(() => window.innerWidth * 0.3 + 64);
+	const [maxSide, setMaxSide] = useState(sidebarMax);
+	const sidebarWidth = Math.min(side, maxSide);
 	const [addOpen, setAddOpen] = useState(false);
 	const [navigationOpen, setNavigationOpen] = useState(false);
 
@@ -59,7 +76,7 @@ export function ChatPage() {
 	// 窗口尺寸变化 → 拖宽上限更新
 	useEffect(() => {
 		const onResize = () => {
-			setMaxSide(window.innerWidth * 0.3 + 64);
+			setMaxSide(sidebarMax());
 			if (window.innerWidth >= 768) setNavigationOpen(false);
 		};
 		window.addEventListener("resize", onResize);
@@ -69,28 +86,41 @@ export function ChatPage() {
 	const persistSide = useCallback((w: number) => {
 		setSide(w);
 	}, []);
-	const onResizeEnd = useCallback(() => {
-		localStorage.setItem("pi-agent:sidebar-width", String(side));
-	}, [side]);
+	const onResizeEnd = useCallback((width: number) => {
+		localStorage.setItem("pi-agent:sidebar-width", String(width));
+	}, []);
 
 	const activeProject = projects.find((p) => p.encoded === activeEncoded) ?? null;
 	const agent = useChatAgentApi({ projectId: activeEncoded });
 
 	const openSession = useCallback(
 		(sid: string) => {
+			projectRequest.current++;
 			setNavigationOpen(false);
 			navigate(`/chat?workspace=${activeEncoded}&sessionId=${sid}`, { replace: true });
 		},
 		[navigate, activeEncoded],
 	);
 	const newSession = useCallback(() => {
+		projectRequest.current++;
 		setNavigationOpen(false);
 		navigate(`/chat?workspace=${activeEncoded}`, { replace: true });
 	}, [navigate, activeEncoded]);
 	const selectProject = useCallback(
-		(encoded: string) => {
+		async (encoded: string) => {
+			const request = ++projectRequest.current;
 			if (encoded === activeEncoded) return;
-			navigate(`/chat?workspace=${encoded}`, { replace: true });
+			const search = window.location.search;
+			try {
+				const target = await resolveProjectChatPath(encoded);
+				if (request === projectRequest.current && window.location.search === search) {
+					setNavigationOpen(false);
+					navigate(target, { replace: true });
+				}
+			} catch (error) {
+				if (request === projectRequest.current && window.location.search === search)
+					toast.error(error instanceof Error ? error.message : String(error));
+			}
 		},
 		[navigate, activeEncoded],
 	);
@@ -130,7 +160,7 @@ export function ChatPage() {
 				/>
 			) : (
 				<div className="flex flex-1 items-center justify-center rounded-tl-[12px] border-l border-t border-[var(--border-muted)] bg-[var(--bg-base)] text-xs text-[var(--text-muted)]">
-					未配置项目（WORKSPACE_ROOTS）
+					点击 + 添加项目文件夹
 				</div>
 			)}
 		</>
@@ -165,6 +195,9 @@ export function ChatPage() {
 					</span>
 				)}
 				<SessionMetricsBar metrics={metrics} />
+				<Button type="button" size="sm" variant="ghost" onClick={() => setAttentionOpen(true)}>
+					待处理 {attention.length || ""}
+				</Button>
 				<span className="shrink-0 text-xs text-[var(--text-muted)]">{status}</span>
 			</header>
 
@@ -173,25 +206,33 @@ export function ChatPage() {
 				<nav
 					aria-label="项目与会话"
 					className="hidden h-full shrink-0 overflow-hidden md:flex"
-					style={{ width: Math.min(side, Math.max(MIN_SIDE, maxSide)) }}
+					style={{ width: sidebarWidth }}
 				>
 					{navigation}
 				</nav>
 
 				{/* 分割线：会话面板 ↔ 聊天 */}
-				<div className="hidden md:block">
-					<ResizeHandle
-						size={side}
-						min={MIN_SIDE}
-						max={maxSide}
-						onResize={persistSide}
-						onEnd={onResizeEnd}
-					/>
-				</div>
+				<ResizeHandle
+					size={sidebarWidth}
+					min={MIN_SIDE}
+					max={maxSide}
+					onResize={persistSide}
+					onEnd={onResizeEnd}
+				/>
 
-				{/* 聊天 main：rounded-tl 卡片（消息流、审批与输入框） */}
-				<main className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-tl-[12px] border-l border-t border-[var(--border-muted)] bg-[var(--bg-base)]">
-					<ChatMessageList agent={agent} />
+				{/* 聊天区包含消息流、审批与输入框。 */}
+				<main className="flex min-w-0 flex-1 flex-col overflow-hidden border-l border-t border-[var(--border-muted)] bg-[var(--bg-base)]">
+					{activeEncoded ? (
+						<ChatMessageList agent={agent} />
+					) : (
+						<div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
+							<h1 className="text-lg font-medium text-[var(--text-base)]">选择项目，开始聊天</h1>
+							<p className="max-w-sm text-sm text-[var(--text-muted)]">
+								选择一个项目文件夹，智能体将在此处理文件与任务。
+							</p>
+							<Button onClick={() => setAddOpen(true)}>选择项目文件夹</Button>
+						</div>
+					)}
 				</main>
 			</div>
 			<DirectoryPicker
@@ -199,6 +240,55 @@ export function ChatPage() {
 				onClose={() => setAddOpen(false)}
 				onConfirm={(p) => void onPickDirectory(p)}
 			/>
+			<Dialog open={attentionOpen} onOpenChange={setAttentionOpen}>
+				<DialogContent className="sm:max-w-lg" aria-describedby={undefined}>
+					<DialogTitle>待处理与未读</DialogTitle>
+					{!attention.length && (
+						<p className="text-sm text-[var(--text-muted)]">暂时没有需要处理的会话。</p>
+					)}
+					{attention.map((row) => {
+						const project = projects.find((project) => project.path === row.workspace);
+						return (
+							<button
+								key={row.sessionId}
+								type="button"
+								disabled={!!retryingDelete || (!project && row.lifecycle !== "deleting")}
+								className="rounded-md border p-3 text-left hover:bg-[var(--overlay-hover)]"
+								onClick={() => {
+									if (row.lifecycle === "deleting") {
+										setRetryingDelete(row.sessionId);
+										void deleteSession(row.sessionId, row.revision, true)
+											.catch((error) =>
+												toast.error(error instanceof Error ? error.message : String(error)),
+											)
+											.finally(() => setRetryingDelete(null));
+										return;
+									}
+									if (project) {
+										navigate(`/chat?workspace=${project.encoded}&sessionId=${row.sessionId}`, {
+											replace: true,
+										});
+										setAttentionOpen(false);
+									}
+								}}
+							>
+								<span className="block truncate text-sm">
+									{row.name || row.firstMessage || "新会话"}
+								</span>
+								<span className="text-xs text-[var(--text-muted)]">
+									{project?.name || row.workspace} ·{" "}
+									{row.lifecycle === "deleting" ? "重试删除" : sessionLabel(row) || "未读"}
+								</span>
+								{row.managementError && (
+									<span className="block whitespace-pre-wrap break-words text-xs text-destructive">
+										{row.managementError}
+									</span>
+								)}
+							</button>
+						);
+					})}
+				</DialogContent>
+			</Dialog>
 		</div>
 	);
 }

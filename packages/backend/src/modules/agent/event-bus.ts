@@ -13,6 +13,7 @@ const BUFFER_SIZE = 500;
 export type BusSubscriber = (ev: SequencedEvent) => void;
 
 export class SessionEventBus {
+	readonly epoch = crypto.randomUUID();
 	private seq = 0;
 	private buffer: SequencedEvent[] = [];
 	private subscribers = new Set<BusSubscriber>();

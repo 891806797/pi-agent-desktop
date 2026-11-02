@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ModelSettingsInput } from "@pi-agent/common/dto/requests";
 import { createApp } from "../src/core/create-app";
+import { env } from "../src/env";
 import {
 	closeSession,
 	getHistory,
@@ -15,8 +19,19 @@ import { EventTranslator, messageIdOf } from "../src/modules/agent/event-transla
 import { projectMessages } from "../src/modules/agent/history";
 import type { SessionContext } from "../src/modules/agent/session-registry";
 import { registry } from "../src/modules/agent/session-registry";
+import { configureTestModels } from "./helpers";
 
 const restores: Array<() => void> = [];
+function modelFixture() {
+	const previous = env.dataDir;
+	const dir = mkdtempSync(join(tmpdir(), "pi-model-mutation-"));
+	(env as { dataDir: string }).dataDir = dir;
+	configureTestModels("review-user", ["new", "m"], "p");
+	restores.push(() => {
+		(env as { dataDir: string }).dataDir = previous;
+		rmSync(dir, { recursive: true, force: true });
+	});
+}
 afterEach(() => {
 	for (const restore of restores.splice(0)) restore();
 });
@@ -73,6 +88,7 @@ describe("会话业务对接回归", () => {
 		expect(events).not.toContainEqual({ event: "thinking_level_changed", data: { level: "max" } });
 	});
 	test("模型认证仍在等待时，随后修改的思考强度必须在新模型上应用", async () => {
+		modelFixture();
 		const runtime = spyOn(registry, "modelRuntimeFor").mockResolvedValue({
 			getModel: () => ({ provider: "p", id: "new" }),
 		} as never);
@@ -102,9 +118,10 @@ describe("会话业务对接回归", () => {
 		expect(changes).toEqual([]);
 		release();
 		await Promise.all([switching, thinking]);
-		expect(changes).toEqual(["model", "high"]);
+		expect(changes).toEqual(["model", "off", "high"]);
 	});
 	test("模型拒绝切换时接口失败且不广播成功", async () => {
+		modelFixture();
 		const runtime = spyOn(registry, "modelRuntimeFor").mockResolvedValue({
 			getModel: () => ({ provider: "p", id: "m" }),
 		} as never);

@@ -1,11 +1,11 @@
 /**
  * 路径归一化与 per-user 数据目录 —— 多用户安全边界。
  *
- * 工作空间白名单：WORKSPACE_ROOTS（分号分隔）内目录为合法会话 cwd。
+ * 工作空间白名单由每用户 SQLite 项目清单提供；WORKSPACE_ROOTS 仅作初始清单。
  * 文件类操作同时校验相对关系和物理路径，防目录与符号链接逃逸。
  */
 
-import { lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { AppError } from "@/core/app-error";
 import { env } from "@/env";
@@ -55,31 +55,6 @@ export function userSessionsDir(userId: string): string {
 	const dir = join(userRoot(userId), "sessions");
 	mkdirSync(dir, { recursive: true });
 	return dir;
-}
-
-/** per-user 会话运行时元数据 sidecar（runMode 等，跨重启恢复） */
-export function userSessionMetaPath(userId: string, sessionId: string): string {
-	return join(userSessionsDir(userId), `${sessionId}.meta.json`);
-}
-
-export interface SessionMeta {
-	runMode?: import("@pi-agent/common").RunMode;
-}
-
-export function readSessionMeta(userId: string, sessionId: string): SessionMeta {
-	try {
-		return JSON.parse(readFileSync(userSessionMetaPath(userId, sessionId), "utf8")) as SessionMeta;
-	} catch {
-		return {};
-	}
-}
-
-export function writeSessionMeta(userId: string, sessionId: string, meta: SessionMeta): void {
-	writeFileSync(
-		userSessionMetaPath(userId, sessionId),
-		`${JSON.stringify(meta, null, 2)}\n`,
-		"utf8",
-	);
 }
 
 /** 校验文件在 base 内，返回绝对路径；不存在的文件仍检查其父目录的链接。 */

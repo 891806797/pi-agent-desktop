@@ -1,0 +1,1 @@
+ALTER TABLE `session_catalog` ADD `has_history` integer DEFAULT false NOT NULL;

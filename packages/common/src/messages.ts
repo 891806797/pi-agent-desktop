@@ -5,16 +5,16 @@
  * 1. 前端 store 逐事件 applyEvent 累积（流式增量）
  * 2. 后端 history.ts 从 pi JSONL 投影（刷新/重连全量对账）
  *
- * 共享枚举（RunMode/ThinkingLevel/AgentStatus/SessionCloseReason）也定义于此，
+ * RunMode/ThinkingLevel 派生自 default-settings 的共享校验；状态类型定义于此。
  * sse-events.ts 只 import 不重复定义（避免循环）。
  */
 
 // ===== 共享枚举 =====
 
-export type RunMode = "auto" | "standard" | "safe" | "plan";
+export type RunMode = import("./default-settings").DefaultSettings["runMode"];
 
 /** pi ThinkingLevel（@earendil-works/pi-agent-core），前后端仅作展示与传参用 */
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type ThinkingLevel = import("./default-settings").DefaultSettings["thinkingLevel"];
 
 export type AgentStatus =
 	| "idle"
@@ -54,7 +54,8 @@ export type PendingKind =
 	| "ask_question"
 	| "ui_select"
 	| "ui_confirm"
-	| "ui_input";
+	| "ui_input"
+	| "ui_editor";
 
 export interface ToolPermissionPayload {
 	toolName: string;
@@ -95,16 +96,22 @@ export interface UiInputPayload {
 	title: string;
 	placeholder?: string;
 }
+export interface UiEditorPayload {
+	title: string;
+	prefill?: string;
+}
 
 export type PendingPayload =
 	| ToolPermissionPayload
 	| AskQuestionPayload
 	| UiSelectPayload
 	| UiConfirmPayload
-	| UiInputPayload;
+	| UiInputPayload
+	| UiEditorPayload;
 
 /** 挂起审批（tool_permission 用 toolCallId，其余用 uuid） */
 export interface PendingRequest {
+	origin?: { toolCallId: string; ordinal: number };
 	requestId: string;
 	/** 服务端绝对截止时间（毫秒）；恢复页面沿用该值，不重新计时。 */
 	expiresAt?: number;
@@ -121,6 +128,11 @@ export interface ModelRef {
 	name?: string;
 	contextWindow?: number;
 	supportedThinkingLevels?: ThinkingLevel[];
+	defaultThinkingLevel?: ThinkingLevel;
+}
+
+export function formatModelName(model: Pick<ModelRef, "provider" | "modelId">): string {
+	return `${model.provider} · ${model.modelId}`;
 }
 
 // ===== 会话 =====
@@ -204,6 +216,14 @@ export interface SSEEventUsageData {
 	durationMs?: number;
 	/** 实际响应模型（与请求 model 不同时） */
 	responseModel?: string;
+}
+
+/** pi 口径：缓存读取 /（未缓存输入 + 缓存读取 + 缓存写入），无输入时未知。 */
+export function cacheHitRate(
+	usage: Pick<SSEEventUsageData, "inputTokens" | "cacheReadTokens" | "cacheCreationTokens">,
+): number | null {
+	const total = usage.inputTokens + usage.cacheReadTokens + usage.cacheCreationTokens;
+	return total > 0 ? (usage.cacheReadTokens / total) * 100 : null;
 }
 
 /** 与 pi TUI footer 同口径：会话累计用量、最近响应缓存率和当前上下文估算。 */

@@ -4,10 +4,12 @@
  */
 
 import type { WorkspaceInfo } from "@pi-agent/common";
-import { HelpCircle, LogOut, Plus, Settings } from "lucide-react";
+import { Leaf, LogOut, Moon, Plus, Settings, Sun } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { logout } from "@/lib/api";
+import { nextTheme, THEME_LABELS, useThemeStore } from "@/lib/theme";
 import { useAuthStore } from "@/stores/auth";
+import { needsAttention, useSessionsStore } from "@/stores/sessions";
 
 /** 按项目名 hash 选暖色调背景，首字符头像便于区分 */
 const AVATAR_COLORS = [
@@ -34,10 +36,12 @@ function ProjectTile({
 	project,
 	active,
 	onClick,
+	pending,
 }: {
 	project: WorkspaceInfo;
 	active: boolean;
 	onClick: () => void;
+	pending: number;
 }) {
 	const c = avatarColor(project.name);
 	return (
@@ -45,18 +49,25 @@ function ProjectTile({
 			type="button"
 			title={`${project.name}\n${project.path}`}
 			onClick={onClick}
-			className={`flex size-10 items-center justify-center overflow-hidden rounded-lg border p-0 transition-colors ${
+			style={{ backgroundColor: c.bg, color: c.fg }}
+			className={`relative flex size-10 shrink-0 items-center justify-center rounded-xl border-2 p-0 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary ${
 				active
-					? "border-2 border-[var(--text-base)]"
-					: "border border-transparent hover:border-[var(--border-muted)] hover:bg-[var(--overlay-hover)]"
+					? "border-[var(--text-base)]"
+					: "border-transparent hover:border-[var(--border-strong)]"
 			}`}
 		>
-			<span
-				className="flex size-full select-none items-center justify-center text-[16px] font-semibold"
-				style={{ backgroundColor: c.bg, color: c.fg }}
-			>
+			<span className="flex size-full select-none items-center justify-center text-[16px] font-semibold">
 				{initial(project.name)}
 			</span>
+			{pending > 0 && (
+				<span
+					role="status"
+					aria-label={`${pending} 个会话待处理`}
+					className="absolute -right-1 -top-1 min-w-4 rounded-full bg-amber-700 px-1 text-[10px] text-white"
+				>
+					{pending}
+				</span>
+			)}
 		</button>
 	);
 }
@@ -74,6 +85,10 @@ export function ProjectRail({
 }) {
 	const navigate = useNavigate();
 	const setUsername = useAuthStore((s) => s.setUsername);
+	const rows = useSessionsStore((state) => state.rows);
+	const theme = useThemeStore((state) => state.theme);
+	const cycleTheme = useThemeStore((state) => state.cycle);
+	const ThemeIcon = theme === "eye" ? Leaf : theme === "light" ? Sun : Moon;
 
 	const doLogout = async () => {
 		await logout();
@@ -90,6 +105,10 @@ export function ProjectRail({
 						project={p}
 						active={p.encoded === activeEncoded}
 						onClick={() => onSelect(p.encoded)}
+						pending={
+							Object.values(rows).filter((row) => row.workspace === p.path && needsAttention(row))
+								.length
+						}
 					/>
 				))}
 				<button
@@ -112,10 +131,12 @@ export function ProjectRail({
 				</button>
 				<button
 					type="button"
-					title="帮助"
+					title={`当前${THEME_LABELS[theme]}色调，切换为${THEME_LABELS[nextTheme(theme)]}`}
+					aria-label={`当前${THEME_LABELS[theme]}色调，切换为${THEME_LABELS[nextTheme(theme)]}`}
+					onClick={cycleTheme}
 					className="flex size-8 items-center justify-center rounded-md text-[var(--text-faint)] transition-colors hover:bg-[var(--overlay-hover)] hover:text-[var(--text-base)]"
 				>
-					<HelpCircle className="size-4" />
+					<ThemeIcon aria-hidden className="size-4" />
 				</button>
 				<button
 					type="button"

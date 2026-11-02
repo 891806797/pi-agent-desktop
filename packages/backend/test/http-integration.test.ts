@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { openRuntimeDatabase } from "../src/db";
+import { users as usersTable } from "../src/db/schema";
 import { waitForServer } from "./probes/server-startup";
 
 test("隔离 HTTP/SDK：三页面审批/提问同步、运行中配置切换在下一请求生效", async () => {
@@ -141,9 +143,9 @@ test("隔离 HTTP/SDK：三页面审批/提问同步、运行中配置切换在�
 			body: JSON.stringify({ providers: { fixture: { models: [{ id: 123 }] } } }),
 		});
 		expect(invalidSettings.status).toBe(400);
-		const users = JSON.parse(readFileSync(join(dataDir, "users.json"), "utf8")) as Array<{
-			id: string;
-		}>;
+		const database = openRuntimeDatabase(join(dataDir, "runtime.sqlite"));
+		const users = database.select({ id: usersTable.id }).from(usersTable).all();
+		database.$client.close(true);
 		const agentDir = join(dataDir, "users", users[0].id, "agent");
 		mkdirSync(agentDir, { recursive: true });
 		writeFileSync(

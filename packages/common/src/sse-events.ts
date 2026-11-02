@@ -205,6 +205,12 @@ export interface SSEEventQueryClosed {
 }
 
 export type SSEEvent =
+	| { event: "extension_ui"; data: import("./extension-ui").ExtensionUISnapshot }
+	| {
+			event: "extension_notify";
+			data: { id: string; message: string; type: "info" | "warning" | "error" };
+	  }
+	| { event: "run_issue"; data: { issue: import("./run-issue").RunIssue | null } }
 	| { event: "heartbeat"; data: { seq: number } }
 	| { event: "session_metrics"; data: SessionMetrics }
 	| { event: "system_message"; data: { id: string; content: string; createdAt: number } }

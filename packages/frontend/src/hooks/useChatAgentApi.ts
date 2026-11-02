@@ -4,7 +4,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import type { Attachment, ChatAgentApi } from "@/lib/agent-types";
 import * as api from "@/lib/api";
-import { sendToSession } from "@/lib/send-message";
+import {
+	applyInitialPreferences,
+	updatePreferences,
+	waitForPreferences,
+} from "@/lib/default-settings";
+import { type PendingSessionSettings, sendToSession } from "@/lib/send-message";
+import { useAuthStore } from "@/stores/auth";
 import { useChatStore } from "@/stores/chat";
 
 const RUN_LABEL = { auto: "自动", standard: "标准", safe: "安全", plan: "计划" };
@@ -18,7 +24,7 @@ export function useChatAgentApi(opts: { projectId: string | null }): ChatAgentAp
 	const pageSearch = location.search;
 	const page = useRef({ search: pageSearch });
 	if (page.current.search !== pageSearch) page.current = { search: pageSearch };
-	const pendingModes = useRef(new Map<string, import("@pi-agent/common").RunMode>());
+	const pendingSettings = useRef(new Map<string, PendingSessionSettings>());
 	const sending = useRef<{ page: { search: string } } | null>(null);
 	const [sendError, setSendError] = useState<{ page: { search: string }; message: string } | null>(
 		null,
@@ -77,9 +83,12 @@ export function useChatAgentApi(opts: { projectId: string | null }): ChatAgentAp
 				return false;
 			}
 			const currentPage = page.current;
+			const username = useAuthStore.getState().username;
 			const operation = { page: currentPage };
 			const isCurrent = () =>
-				page.current === currentPage && location.search === currentPage.search;
+				useAuthStore.getState().username === username &&
+				page.current === currentPage &&
+				location.search === currentPage.search;
 			const sid = api.urlSessionId();
 			sending.current = operation;
 			setSendError(null);
@@ -91,21 +100,42 @@ export function useChatAgentApi(opts: { projectId: string | null }): ChatAgentAp
 					data: a.dataUrl.split(",")[1] ?? "",
 					mimeType: a.mime as "image/png" | "image/jpeg" | "image/gif" | "image/webp",
 				}));
-			return sendToSession(
-				{ text, behavior, ...(images?.length ? { images } : {}) },
-				projectId,
-				sid,
-				useChatStore.getState().runMode,
-				{
-					isCurrent,
-					pendingModes: pendingModes.current,
-					onCreated: (coords) => {
-						currentPage.search = `?workspace=${encodeURIComponent(coords.workspace)}&sessionId=${encodeURIComponent(coords.sessionId)}`;
-						navigate(`/chat${currentPage.search}`, { replace: true });
-						useChatStore.getState().setSession(coords.sessionId);
-					},
-				},
-			)
+			return waitForPreferences()
+				.then(() =>
+					sendToSession(
+						{ text, behavior, ...(images?.length ? { images } : {}) },
+						projectId,
+						sid,
+						{
+							runMode: useChatStore.getState().runMode,
+							...(useChatStore.getState().model
+								? {
+										model: useChatStore.getState().model!,
+										thinkingLevel: useChatStore.getState().thinkingLevel,
+									}
+								: {}),
+						},
+						{
+							isCurrent,
+							pendingSettings: pendingSettings.current,
+							prepareSettings: async () => {
+								const settings = await api.getDefaultSettings();
+								return {
+									runMode: settings.runMode,
+									thinkingLevel: settings.thinkingLevel,
+									...(settings.model ? { model: settings.model } : {}),
+								};
+							},
+							applyInitial: applyInitialPreferences,
+							beforeSend: waitForPreferences,
+							onCreated: (coords) => {
+								currentPage.search = `?workspace=${encodeURIComponent(coords.workspace)}&sessionId=${encodeURIComponent(coords.sessionId)}`;
+								navigate(`/chat${currentPage.search}`, { replace: true });
+								useChatStore.getState().setSession(coords.sessionId);
+							},
+						},
+					),
+				)
 				.catch((err) => {
 					if (isCurrent()) {
 						setSendError({
@@ -148,13 +178,15 @@ export function useChatAgentApi(opts: { projectId: string | null }): ChatAgentAp
 		selectRunMode: async (m) => {
 			if (location.search !== pageSearch || api.urlWorkspace() !== projectId) return;
 			const currentSid = api.urlSessionId();
-			if (!currentSid) {
-				useChatStore.getState().setRunMode(m);
-				return;
-			}
 			const search = location.search;
 			try {
-				await api.setRunMode(m);
+				await updatePreferences(
+					{ runMode: m },
+					() => location.search === search,
+					currentSid
+						? () => api.setRunMode(m, { sessionId: currentSid, workspace: projectId! })
+						: undefined,
+				);
 			} catch (err) {
 				if (location.search === search)
 					useChatStore.setState({ lastError: err instanceof Error ? err.message : String(err) });

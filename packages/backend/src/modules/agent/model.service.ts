@@ -1,27 +1,28 @@
 import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { AppError } from "@/core/app-error";
 import { userAgentDir } from "@/modules/system/paths";
+import { configuredDefaultThinking, configuredModels, readModelConfig } from "./model-config";
 import { registry } from "./session-registry";
 
 const modelSettingsWrites = new Map<string, Promise<void>>();
 export async function listModels(userId: string) {
 	const runtime = await registry.modelRuntimeFor(userId);
-	const available = await runtime.getAvailable(undefined, { signal: AbortSignal.timeout(8000) });
+	await runtime.refresh({ allowNetwork: false });
+	const available = configuredModels(userId, runtime);
 	return available.map((model) => ({
 		provider: model.provider,
 		modelId: model.id,
 		name: model.name,
 		contextWindow: model.contextWindow,
+		defaultThinkingLevel: configuredDefaultThinking(userId, model.provider, model.id),
+		supportedThinkingLevels: getSupportedThinkingLevels(model),
 	}));
 }
 
 export function getModelSettings(userId: string): unknown {
-	try {
-		return JSON.parse(readFileSync(join(userAgentDir(userId), "models.json"), "utf8"));
-	} catch {
-		return { providers: {} };
-	}
+	return readModelConfig(userId);
 }
 
 export async function saveModelSettings(userId: string, input: unknown): Promise<void> {

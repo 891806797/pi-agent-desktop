@@ -1,16 +1,8 @@
-/** QueueBar —— 输入框上方排队队列（steering/followUp 分组） */
-
-import { ChevronDown, Trash2, X } from "lucide-react";
-import { useState } from "react";
-import { Badge } from "@/components/ui/badge";
+/** 待发送消息贴合输入框上沿；操作复用服务端队列的版本校验与幂等发送。 */
+import { CornerDownRight, ListEnd, Trash2 } from "lucide-react";
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuItem,
-	DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { clearQueue, dispatchQueueItem, removeQueueItem } from "@/lib/api";
+import { dispatchQueueItem, removeQueueItem } from "@/lib/api";
 import { useChatStore } from "@/stores/chat";
 
 function Row({
@@ -25,123 +17,105 @@ function Row({
 	revision?: number;
 }) {
 	const [busy, setBusy] = useState(false);
-	const act = async (fn: () => Promise<unknown>) => {
+	const pending = useRef(false);
+	const act = async (action: () => Promise<unknown>) => {
+		if (pending.current) return;
 		const search = location.search;
+		pending.current = true;
 		setBusy(true);
 		try {
-			await fn();
-		} catch (err) {
+			await action();
+		} catch (error) {
 			if (location.search === search)
-				useChatStore.setState({ lastError: err instanceof Error ? err.message : String(err) });
+				useChatStore.setState({
+					lastError: error instanceof Error ? error.message : String(error),
+				});
 		} finally {
+			pending.current = false;
 			setBusy(false);
 		}
 	};
-	const dispatch = (mode: "steer" | "stop") => {
-		if (revision === undefined) return;
-		void act(() =>
-			dispatchQueueItem({
-				requestId: crypto.randomUUID(),
-				index,
-				behavior,
-				expectedText: text,
-				revision,
-				mode,
-			}),
-		);
-	};
 	return (
-		<div className="flex items-center gap-2 rounded-md border border-border bg-card px-2 py-1 text-xs">
-			<Badge
-				variant={behavior === "steer" ? "default" : "secondary"}
-				className="shrink-0 text-[10px]"
-			>
-				{behavior === "steer" ? "尽快切入" : "任务结束后"}
-			</Badge>
-			<span className="flex-1 truncate text-muted-foreground" title={text}>
+		<li className="flex min-h-12 items-center gap-2 px-3 py-1.5 max-md:px-2" aria-busy={busy}>
+			<ListEnd className="size-4 shrink-0 text-[var(--text-faint)]" aria-hidden="true" />
+			<span className="min-w-0 flex-1 truncate text-sm text-[var(--text-base)]" title={text}>
 				{text}
 			</span>
-			<DropdownMenu>
-				<DropdownMenuTrigger asChild>
-					<Button
-						size="sm"
-						variant="ghost"
-						className="h-7 px-2 text-xs"
-						disabled={busy || revision === undefined}
-					>
-						{busy ? "处理中…" : "立即发送"}
-						<ChevronDown className="size-3" />
-					</Button>
-				</DropdownMenuTrigger>
-				<DropdownMenuContent align="end" side="top" className="max-w-[calc(100vw-2rem)]">
-					<DropdownMenuItem className="block" onSelect={() => dispatch("steer")}>
-						<div>不停止当前运行，尽快切入</div>
-						<div className="mt-1 text-xs text-muted-foreground">
-							当前请求不会被打断，在下一次可接收输入时处理。
-						</div>
-					</DropdownMenuItem>
-					<DropdownMenuItem className="block" onSelect={() => dispatch("stop")}>
-						<div>停止当前运行后发送</div>
-						<div className="mt-1 text-xs text-muted-foreground">
-							取消当前审批并停止运行，其他待消息继续保留。
-						</div>
-					</DropdownMenuItem>
-				</DropdownMenuContent>
-			</DropdownMenu>
-			<Button
-				size="sm"
-				variant="ghost"
-				className="h-5 px-1 text-[10px] text-destructive"
-				disabled={busy}
-				aria-label="删除这条待消息"
-				onClick={() => void act(() => removeQueueItem(index, behavior, text, undefined, revision))}
-			>
-				<X className="size-3" />
-			</Button>
-		</div>
+			<div className="flex shrink-0 items-center gap-1 text-[var(--text-muted)]">
+				<Button
+					type="button"
+					size="sm"
+					variant="ghost"
+					className="h-8 gap-1 rounded-lg px-2 text-xs"
+					disabled={busy || revision === undefined}
+					title="不停止当前运行，尽快发送这条消息"
+					onClick={() => {
+						if (revision === undefined) return;
+						void act(() =>
+							dispatchQueueItem({
+								requestId: crypto.randomUUID(),
+								index,
+								behavior,
+								expectedText: text,
+								revision,
+								mode: "steer",
+							}),
+						);
+					}}
+				>
+					<CornerDownRight aria-hidden="true" />
+					{busy ? "处理中…" : "直接发送"}
+				</Button>
+				<Button
+					type="button"
+					size="icon"
+					variant="ghost"
+					className="size-8 rounded-lg enabled:hover:text-destructive"
+					disabled={busy || revision === undefined}
+					aria-label="删除这条待消息"
+					title="删除"
+					onClick={() =>
+						void act(() => removeQueueItem(index, behavior, text, undefined, revision))
+					}
+				>
+					<Trash2 aria-hidden="true" />
+				</Button>
+			</div>
+		</li>
 	);
 }
 
 export function QueueBar() {
-	const queue = useChatStore((s) => s.queue);
-	const total = queue.steering.length + queue.followUp.length;
-	if (total === 0) return null;
+	const queue = useChatStore((state) => state.queue);
+	const issue = useChatStore((state) => state.issue);
+	// 普通 steer 已交 SDK 处理；失败后保留未消费输入的操作入口。
+	const recoverySteering = issue ? queue.steering : [];
+	if (queue.followUp.length + recoverySteering.length === 0) return null;
 	return (
-		<div className="space-y-1 px-4 pb-2">
-			<div className="flex items-center justify-between text-[10px] text-muted-foreground">
-				<span>待消息 {total} 条 · 默认在当前任务结束后发送</span>
-				<Button
-					size="sm"
-					variant="ghost"
-					className="h-5 px-1 text-[10px]"
-					onClick={() => {
-						const search = location.search;
-						void clearQueue().catch((err) => {
-							if (location.search === search) useChatStore.setState({ lastError: String(err) });
-						});
-					}}
-				>
-					<Trash2 className="size-3" /> 清空
-				</Button>
-			</div>
-			{queue.steering.map((t, i) => (
-				<Row
-					key={`${queue.revision}:s${i}`}
-					text={t}
-					behavior="steer"
-					index={i}
-					revision={queue.revision}
-				/>
-			))}
-			{queue.followUp.map((t, i) => (
-				<Row
-					key={`${queue.revision}:f${i}`}
-					text={t}
-					behavior="followUp"
-					index={i}
-					revision={queue.revision}
-				/>
-			))}
+		<div className="relative mx-3 -mb-4 rounded-t-[22px] border border-b-0 border-[var(--border-muted)] bg-[var(--bg-layer-01)] pb-4 max-md:mx-2">
+			<ul
+				aria-label="待发送消息"
+				className="max-h-40 overflow-y-auto divide-y divide-[var(--border-muted)]"
+			>
+				{recoverySteering.map((text, index) => (
+					<Row
+						key={`${queue.revision}:s${index}`}
+						text={text}
+						behavior="steer"
+						index={index}
+						revision={queue.revision}
+					/>
+				))}
+				{queue.followUp.map((text, index) => (
+					<Row
+						key={`${queue.revision}:f${index}`}
+						text={text}
+						behavior="followUp"
+						index={index}
+						revision={queue.revision}
+					/>
+				))}
+			</ul>
 		</div>
 	);
 }

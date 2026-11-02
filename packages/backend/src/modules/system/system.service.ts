@@ -29,11 +29,11 @@ function workspaceInfo(path: string): WorkspaceInfo {
 	};
 }
 
-export function workspaceList(): WorkspaceInfo[] {
-	return listWorkspaces().map(workspaceInfo);
+export function workspaceList(userId: string): WorkspaceInfo[] {
+	return listWorkspaces(userId).map(workspaceInfo);
 }
-export function registerWorkspace(path: string): WorkspaceInfo {
-	return workspaceInfo(addWorkspace(path));
+export function registerWorkspace(userId: string, path: string): WorkspaceInfo {
+	return workspaceInfo(addWorkspace(userId, path));
 }
 
 export function listDirectories(path = "") {
@@ -64,8 +64,8 @@ export function listDirectories(path = "") {
 	return { current: path, entries, drives };
 }
 
-export function listFiles(workspaceB64: string, query?: string): FileItem[] {
-	const root = resolveWorkspaceB64(workspaceB64);
+export function listFiles(userId: string, workspaceB64: string, query?: string): FileItem[] {
+	const root = resolveWorkspaceB64(userId, workspaceB64);
 	const out: FileItem[] = [];
 	const q = query?.toLowerCase();
 	const walk = (dir: string, rel: string, depth: number): void => {

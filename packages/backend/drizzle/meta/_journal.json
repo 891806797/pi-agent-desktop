@@ -8,6 +8,48 @@
       "when": 1793532281876,
       "tag": "0000_past_doctor_strange",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1793539335243,
+      "tag": "0001_early_krista_starr",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1793542104952,
+      "tag": "0002_nifty_magdalene",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1793542815643,
+      "tag": "0003_empty_meteorite",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1793546063294,
+      "tag": "0004_lucky_marrow",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1793546297717,
+      "tag": "0005_lame_kree",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1793546877174,
+      "tag": "0006_overjoyed_lilith",
+      "breakpoints": true
     }
   ]
 }

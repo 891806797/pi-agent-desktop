@@ -18,7 +18,8 @@ interface ModelSelectorPopoverProps {
 	onSelect: (value: string | undefined) => void;
 	onQueryChange: (q: string) => void;
 	onHover: (index: number) => void;
-	/** 文案定制，复用于模型、思考强度和运行模式选择器 */
+	onClose?: () => void;
+	/** 文案定制，复用于模型、思考强度、发送模式和运行模式选择器。 */
 	searchPlaceholder?: string;
 	loadingText?: string;
 	emptyText?: string;
@@ -34,6 +35,7 @@ export function ModelSelectorPopover({
 	onSelect,
 	onQueryChange,
 	onHover,
+	onClose,
 	searchPlaceholder = "搜索模型…",
 	loadingText = "加载模型中…",
 	emptyText = "无可用模型",
@@ -59,10 +61,32 @@ export function ModelSelectorPopover({
 				<input
 					ref={searchRef}
 					value={query}
-					onChange={(e) => onQueryChange(e.target.value)}
+					onChange={(e) => {
+						onQueryChange(e.target.value);
+						onHover(0);
+					}}
 					placeholder={searchPlaceholder}
+					aria-label={searchPlaceholder}
+					onKeyDown={(event) => {
+						if (event.key === "Escape") {
+							event.preventDefault();
+							onClose?.();
+						}
+						if (!items.length) return;
+						if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+							event.preventDefault();
+							onHover(
+								(activeIndex + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length,
+							);
+						}
+						if (event.key === "Enter") {
+							event.preventDefault();
+							const item = items[Math.max(0, Math.min(activeIndex, items.length - 1))];
+							if (item) onSelect(item.value);
+						}
+					}}
 					spellCheck={false}
-					className="h-7 w-full rounded-md border border-[var(--border-base)] bg-[var(--bg-layer-01)] px-2 text-[13px] text-[var(--text-base)] outline-none focus:border-[var(--grey-400)]"
+					className="h-7 w-full rounded-md border border-[var(--border-base)] bg-[var(--bg-layer-01)] px-2 text-[13px] text-[var(--text-base)] outline-none focus:border-[var(--border-strong)]"
 				/>
 			</div>
 			<div className="overflow-auto">
@@ -77,14 +101,16 @@ export function ModelSelectorPopover({
 					return (
 						<button
 							type="button"
+							aria-label={it.label}
+							aria-pressed={selected}
 							key={it.value ?? "__default__"}
 							ref={(el) => {
 								itemRefs.current[i] = el;
 							}}
 							onMouseDown={(e) => {
 								e.preventDefault();
-								onSelect(it.value);
 							}}
+							onClick={() => onSelect(it.value)}
 							onMouseEnter={() => onHover(i)}
 							className={[
 								"flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors",
@@ -100,7 +126,9 @@ export function ModelSelectorPopover({
 								{it.label}
 							</span>
 							{selected && (
-								<span className="ml-auto shrink-0 text-[11px] text-[var(--text-faint)]">✓</span>
+								<span aria-hidden className="ml-auto shrink-0 text-[11px] text-[var(--text-faint)]">
+									✓
+								</span>
 							)}
 						</button>
 					);

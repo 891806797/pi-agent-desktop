@@ -38,7 +38,7 @@ export const Foldable = memo(function Foldable({
 	const [open, setOpen] = useState(false);
 	const lines = content.split("\n");
 	const isShort = lines.length <= RESULT_PREVIEW_LINES && content.length <= 500;
-	const textClass = error ? "text-red-600" : "text-[var(--text-muted)]";
+	const textClass = error ? "text-[var(--danger-text)]" : "text-[var(--text-muted)]";
 	const output = (text: string) => (
 		<pre
 			className={`whitespace-pre-wrap break-words font-mono text-xs leading-relaxed ${textClass}`}

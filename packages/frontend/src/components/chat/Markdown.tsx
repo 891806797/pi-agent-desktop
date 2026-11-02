@@ -25,7 +25,7 @@ interface MarkdownProps {
 const textColor = (dim?: boolean) => (dim ? "text-[var(--text-faint)]" : "text-[var(--text-base)]");
 
 /** 行内代码颜色 — 深绿色 */
-const INLINE_CODE_COLOR = "text-[#1a7f37]";
+const INLINE_CODE_COLOR = "text-[var(--link)]";
 
 // ── 组件映射 ──
 
@@ -87,7 +87,7 @@ const components: Components = {
 	a: ({ href, children }) => (
 		<a
 			href={href}
-			className="text-[#1a7f37] hover:text-[#2ea043] underline underline-offset-2"
+			className="text-[var(--link)] hover:text-[var(--link-hover)] underline underline-offset-2"
 			target="_blank"
 			rel="noopener noreferrer"
 		>

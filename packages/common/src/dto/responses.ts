@@ -66,6 +66,8 @@ export interface SessionListResponse {
 }
 
 export interface SessionInfoResponse {
+	ui?: import("../extension-ui").ExtensionUISnapshot;
+	issue?: import("../run-issue").RunIssue | null;
 	sessionId: string;
 	workspace: string;
 	status: AgentStatus;
@@ -80,6 +82,7 @@ export interface SessionInfoResponse {
 }
 
 export interface HistoryResponse extends SessionInfoResponse {
+	epoch?: string;
 	messages: ChatMessage[];
 	/** 当前事件总线 seq，作为 SSE 增量重放锚点 */
 	seq: number;

@@ -40,9 +40,9 @@ function ProgressDot({
 			className={cn(
 				"size-2.5 rounded-full transition-all",
 				active
-					? "bg-[var(--grey-100)] ring-2 ring-[var(--grey-100)]/30 ring-offset-2 ring-offset-[var(--bg-layer-01)] scale-110"
+					? "bg-[var(--button-face)] ring-2 ring-[var(--button-face)]/30 ring-offset-2 ring-offset-[var(--bg-layer-01)] scale-110"
 					: answered
-						? "bg-[var(--grey-100)]"
+						? "bg-[var(--button-face)]"
 						: "bg-[var(--border-base)] hover:bg-[var(--grey-500)]",
 			)}
 		/>
@@ -410,7 +410,7 @@ export function AskUserQuestionApproval({
 				{currentTab === "submit" ? (
 					<Button
 						size="sm"
-						className="bg-[var(--grey-100)] text-white hover:bg-[var(--grey-50)]"
+						className="bg-[var(--button-face)] text-[var(--button-ink)] hover:opacity-85"
 						onClick={submit}
 						disabled={!allAnswered}
 					>
@@ -419,7 +419,7 @@ export function AskUserQuestionApproval({
 				) : (
 					<Button
 						size="sm"
-						className="bg-[var(--grey-100)] text-white hover:bg-[var(--grey-50)]"
+						className="bg-[var(--button-face)] text-[var(--button-ink)] hover:opacity-85"
 						onClick={next}
 					>
 						{isLastQ ? "完成" : "下一题"}

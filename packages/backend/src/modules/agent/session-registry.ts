@@ -5,6 +5,7 @@
  * （同一用户多工作区可能有会话，仅 sid 不足以定位）。配额 + janitor 空闲回收。
  */
 
+import { rmSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import {
@@ -17,23 +18,21 @@ import {
 import type { AgentStatus, SessionCloseReason, SessionSummary } from "@pi-agent/common";
 import { AppError } from "@/core/app-error";
 import { env } from "@/env";
-import {
-	encodePath,
-	readSessionMeta,
-	userAgentDir,
-	userSessionsDir,
-	writeSessionMeta,
-} from "@/modules/system/paths";
+import { encodePath, userAgentDir, userSessionsDir } from "@/modules/system/paths";
 import { resolveWorkspaceB64 } from "@/modules/system/workspace-registry";
 import { ApprovalManager } from "./approval-manager";
+import { getDefaultSettings } from "./default-settings.service";
 import { SessionEventBus } from "./event-bus";
 import { contentText, EventTranslator } from "./event-translator";
 import { makeAskQuestionExt } from "./ext-ask-question";
 import { makeRunModeGateExt, RunModeHolder } from "./ext-run-mode-gate";
+import { configuredModels, makeModelConfigGateExt } from "./model-config";
 import { queueSnapshot, queueTransaction } from "./queue-operations";
 import { RuntimeStore } from "./runtime-store";
+import { SessionCatalog } from "./session-catalog";
 import { readSessionMetrics } from "./session-metrics";
 import { SessionRecovery } from "./session-recovery";
+import { SessionUI } from "./session-ui";
 import { makeWebUIContext } from "./ui-context";
 
 export interface SessionContext {
@@ -52,9 +51,18 @@ export interface SessionContext {
 	translator: EventTranslator;
 	status: AgentStatus;
 	recovery?: SessionRecovery;
+	interrupted?: boolean;
+	ui?: SessionUI;
+	persistSettings?: () => void;
 }
 
 export class SessionRegistry {
+	private sessionCatalog?: SessionCatalog;
+	private indexedUsers = new Set<string>();
+	catalog(): SessionCatalog {
+		this.sessionCatalog ??= new SessionCatalog(join(env.dataDir, "runtime.sqlite"));
+		return this.sessionCatalog;
+	}
 	private runtimeStore?: RuntimeStore;
 	private runtimes(): RuntimeStore {
 		this.runtimeStore ??= new RuntimeStore(join(env.dataDir, "runtime.sqlite"));
@@ -87,7 +95,7 @@ export class SessionRegistry {
 
 	/**
 	 * 创建或 resume 会话（全进程内一次完成，实施计划 §5.1 九步）。
-	 * resumeSessionId 未命中 JSONL 时抛 NOT_FOUND。
+	 * 空白会话由属主目录恢复；已有历史丢失时不能创建空上下文掩盖问题。
 	 */
 	async create(
 		user: { userId: string; username: string },
@@ -97,6 +105,7 @@ export class SessionRegistry {
 		if (this.stopped) throw new AppError("SESSION_BUSY", "服务正在关闭");
 		cwd = resolve(cwd);
 		if (resumeSessionId) {
+			this.catalog().assertAvailable(user.userId, resumeSessionId);
 			const live = this.map.get(resumeSessionId);
 			if (live) {
 				if (live.userId !== user.userId || relative(live.cwd, cwd) !== "")
@@ -146,27 +155,45 @@ export class SessionRegistry {
 		const sessionsDir = userSessionsDir(user.userId);
 		const modelRuntime = await this.modelRuntimeFor(user.userId);
 		const saved = resumeSessionId ? this.runtimes().read(user.userId, resumeSessionId) : undefined;
+		const savedSettings = resumeSessionId
+			? this.runtimes().readSettings(user.userId, resumeSessionId)
+			: undefined;
+		const models = configuredModels(user.userId, modelRuntime);
+		const preferences = savedSettings ?? getDefaultSettings(user.userId);
+		const initialModel =
+			models.find(
+				(model) =>
+					model.provider === preferences.model?.provider && model.id === preferences.model.modelId,
+			) ?? models[0];
+		if (!initialModel) throw new AppError("MODEL_NOT_FOUND", "请先在模型设置中配置模型");
 		if (saved && relative(saved.cwd, cwd) !== "")
 			throw new AppError("NOT_FOUND", "恢复工作区不匹配");
 
 		let sessionManager: SessionManager;
 		if (resumeSessionId) {
 			const file = SessionManager.findById(cwd, resumeSessionId, sessionsDir);
-			if (!file && !saved?.inputs.length)
+			if (
+				!file &&
+				!saved?.inputs.length &&
+				!this.catalog().canRestoreEmpty(user.userId, resumeSessionId, cwd)
+			)
 				throw new AppError("NOT_FOUND", "会话不存在（或属于其他工作空间）");
 			sessionManager = file
 				? SessionManager.open(file)
 				: SessionManager.create(cwd, sessionsDir, { id: resumeSessionId });
+			if (file) this.catalog().markHistory(user.userId, resumeSessionId);
+			else {
+				const name = this.catalog().get(user.userId, resumeSessionId)?.name;
+				if (name) sessionManager.appendSessionInfo(name);
+			}
 		} else {
 			sessionManager = SessionManager.create(cwd, sessionsDir);
 		}
 
 		const bus = new SessionEventBus();
 		const approvals = new ApprovalManager(bus);
-		// resume 时从 meta sidecar 恢复 runMode；新会话默认 standard（之后 setRunMode 写 meta）
-		const initialRunMode = resumeSessionId
-			? (readSessionMeta(user.userId, resumeSessionId).runMode ?? "standard")
-			: "standard";
+		const display = new SessionUI(bus, approvals);
+		const initialRunMode = savedSettings?.runMode ?? "standard";
 		const runMode = new RunModeHolder(initialRunMode, (mode) => {
 			bus.publish({ event: "run_mode", data: { mode } });
 		});
@@ -176,7 +203,11 @@ export class SessionRegistry {
 		const resourceLoader = new DefaultResourceLoader({
 			cwd,
 			agentDir,
-			extensionFactories: [makeRunModeGateExt(runMode, approvals), makeAskQuestionExt(approvals)],
+			extensionFactories: [
+				makeRunModeGateExt(runMode, approvals),
+				makeAskQuestionExt(approvals),
+				makeModelConfigGateExt(user.userId),
+			],
 			settingsManager,
 			noExtensions: true,
 		});
@@ -189,6 +220,8 @@ export class SessionRegistry {
 			cwd,
 			agentDir,
 			modelRuntime,
+			model: initialModel,
+			thinkingLevel: preferences.thinkingLevel,
 			settingsManager,
 			resourceLoader,
 			sessionManager,
@@ -196,15 +229,14 @@ export class SessionRegistry {
 
 		try {
 			await session.bindExtensions({
-				uiContext: makeWebUIContext(approvals),
+				uiContext: makeWebUIContext(approvals, display),
 				mode: "rpc",
 				onError: (err: unknown) => {
 					console.error(`[session ${session.sessionId}] extension error:`, err);
 				},
 			});
 
-			// 仅在当前模型不可用时采用 SDK 已认证模型，保留可用的历史选择。
-			const available = await modelRuntime.getAvailable();
+			const available = models;
 			if (
 				!available.some(
 					(model) => model.provider === session.model?.provider && model.id === session.model?.id,
@@ -212,6 +244,15 @@ export class SessionRegistry {
 				available[0]
 			) {
 				await session.setModel(available[0]);
+			}
+			if (savedSettings) {
+				const preferred = available.find(
+					(model) =>
+						model.provider === savedSettings.model?.provider &&
+						model.id === savedSettings.model.modelId,
+				);
+				if (preferred) await session.setModel(preferred);
+				session.setThinkingLevel(savedSettings.thinkingLevel);
 			}
 
 			const ctx: SessionContext = {
@@ -229,7 +270,24 @@ export class SessionRegistry {
 				runMode,
 				translator: new EventTranslator(),
 				status: "idle",
+				ui: display,
 			};
+			let lastSettings = "";
+			ctx.persistSettings = () => {
+				const settings = {
+					model: session.model
+						? { provider: session.model.provider, modelId: session.model.id }
+						: null,
+					thinkingLevel: session.thinkingLevel,
+					runMode: runMode.mode,
+				};
+				const serialized = JSON.stringify(settings);
+				if (serialized === lastSettings) return;
+				this.runtimes().writeSettings(ctx.userId, ctx.sessionId, settings);
+				lastSettings = serialized;
+			};
+			// 恢复中的工具执行可能早于下一次 agent_start。
+			display.bindTools(session.agent.state.tools);
 			ctx.recovery = new SessionRecovery(ctx, this.runtimes(), saved);
 
 			let metricsScheduled = false;
@@ -245,10 +303,14 @@ export class SessionRegistry {
 			};
 			bus.subscribe((ev) => {
 				if (ev.event === "status") ctx.status = ev.data.status;
+				if (["model_changed", "thinking_level_changed", "run_mode"].includes(ev.event))
+					ctx.persistSettings?.();
 				if (ev.event === "model_changed") scheduleMetrics();
 				if (ev.event === "queue_update") ctx.recovery?.queueChanged();
 			});
 			session.subscribe((ev) => {
+				if (ev.type === "agent_start") display.bindTools(session.agent.state.tools);
+				if (ev.type === "agent_settled") display.flush();
 				ctx.recovery?.onEvent(ev);
 				ctx.lastActiveAt = Date.now();
 				for (const sse of ctx.translator.translate(ev)) bus.publish(sse);
@@ -261,8 +323,6 @@ export class SessionRegistry {
 					scheduleMetrics();
 			});
 
-			// 写 meta sidecar（resume 已有则保留，新会话或缺失补默认）
-			writeSessionMeta(user.userId, ctx.sessionId, { runMode: runMode.mode });
 			bus.publish({ event: "session", data: { sessionId: ctx.sessionId } });
 			if (session.model) {
 				bus.publish({
@@ -272,16 +332,33 @@ export class SessionRegistry {
 			}
 			bus.publish({ event: "thinking_level_changed", data: { level: session.thinkingLevel } });
 			bus.publish({ event: "run_mode", data: { mode: runMode.mode } });
+			ctx.persistSettings();
 			bus.publish({ event: "status", data: { status: "idle" } });
 			scheduleMetrics();
+			this.catalog().assertAvailable(user.userId, ctx.sessionId);
+			this.catalog().upsert(user.userId, {
+				sessionId: ctx.sessionId,
+				workspace: cwd,
+				firstMessage: "",
+				createdAt: sessionManager.getHeader()?.timestamp,
+			});
+			this.catalog().project(user.userId, ctx.sessionId, { live: true, status: "idle" });
 			this.map.set(ctx.sessionId, ctx);
+			this.catalog().watch(ctx);
 			if (
 				saved &&
+				(!saved.issue || saved.intent) &&
 				(saved.active || saved.inputs.length || saved.approvals.some((item) => !item.outcome))
 			)
 				ctx.recovery.start();
+			if (saved?.issue && !saved.intent) {
+				ctx.recovery.restorePausedInputs();
+				bus.publish({ event: "run_issue", data: { issue: saved.issue } });
+				bus.publish({ event: "status", data: { status: "error" } });
+			}
 			return ctx;
 		} catch (error) {
+			display.dispose();
 			approvals.rejectAll("会话初始化失败");
 			try {
 				await session.abort();
@@ -342,33 +419,39 @@ export class SessionRegistry {
 			await ctx.session.settingsManager.flush();
 		} finally {
 			ctx.session.dispose();
+			ctx.ui?.dispose();
 			ctx.recovery?.remove();
 			this.map.delete(ctx.sessionId);
+			this.catalog().project(ctx.userId, ctx.sessionId, {
+				live: false,
+				status: "idle",
+				pendingPermissions: 0,
+				pendingQuestions: 0,
+			});
 		}
 	}
 
 	/** 扫描 per-user 会话目录，live 标记来自注册表 */
-	listSessions(userId: string, workspace?: string): SessionSummary[] {
+	private reconcileUser(userId: string): void {
+		if (this.indexedUsers.has(userId)) return;
 		const dir = userSessionsDir(userId);
-		const summaries: SessionSummary[] = [];
 		try {
 			for (const file of Array.from(new Bun.Glob("*.jsonl").scanSync({ cwd: dir }))) {
 				try {
 					const sm = SessionManager.open(join(dir, file));
 					const header = sm.getHeader();
 					if (!header) continue;
-					if (workspace && header.cwd !== workspace) continue;
 					const messages = sm.buildSessionContext().messages;
 					const firstUser = messages.find((m) => m.role === "user");
 					const firstText = contentText(firstUser?.content);
-					summaries.push({
+					this.catalog().upsert(userId, {
 						sessionId: header.id,
 						workspace: header.cwd,
 						firstMessage: firstText.slice(0, 100),
-						live: this.map.has(header.id),
 						createdAt: header.timestamp,
 						name: sm.getSessionName(),
 					});
+					this.catalog().markHistory(userId, header.id);
 				} catch {
 					// 单个损坏文件跳过，不阻断列表
 				}
@@ -376,7 +459,69 @@ export class SessionRegistry {
 		} catch {
 			// 目录不可读返回空列表
 		}
-		return summaries.sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
+		this.indexedUsers.add(userId);
+	}
+	listSessions(userId: string, workspace?: string): SessionSummary[] {
+		this.reconcileUser(userId);
+		return this.catalog().list(userId, { workspace, limit: 100 }).sessions;
+	}
+	listCatalog(userId: string, query: import("@pi-agent/common").CatalogQuery = {}) {
+		this.reconcileUser(userId);
+		return this.catalog().list(userId, query);
+	}
+	async updateSession(
+		userId: string,
+		sessionId: string,
+		revision: number,
+		patch: { name?: string; archived?: boolean },
+	) {
+		const catalog = this.catalog();
+		const row = catalog.require(userId, sessionId);
+		catalog.assertAvailable(userId, sessionId);
+		const ctx = this.get(sessionId, userId, row.workspace);
+		const update = async () => {
+			catalog.assertAvailable(userId, sessionId);
+			const current = catalog.require(userId, sessionId);
+			if (current.revision !== revision)
+				throw new AppError("SESSION_BUSY", "会话已更新，请刷新后重试");
+			if (patch.name !== undefined) {
+				if (ctx) ctx.session.setSessionName(patch.name);
+				else {
+					const file = SessionManager.findById(row.workspace, sessionId, userSessionsDir(userId));
+					if (file) SessionManager.open(file).appendSessionInfo(patch.name);
+				}
+			}
+			return catalog.update(userId, sessionId, revision, patch);
+		};
+		return ctx ? queueTransaction(ctx, update) : update();
+	}
+	async deleteSession(userId: string, sessionId: string, revision: number, stopIfRunning: boolean) {
+		const row = this.catalog().require(userId, sessionId);
+		const ctx = this.map.get(sessionId);
+		if (
+			row.lifecycle === "normal" &&
+			ctx &&
+			(!ctx.session.isIdle || ctx.approvals.pendingList().length || ctx.recovery?.running) &&
+			!stopIfRunning
+		)
+			throw new AppError("SESSION_BUSY", "会话正在运行，请确认停止并删除");
+		this.catalog().beginDelete(userId, sessionId, revision);
+		try {
+			if (ctx) await this.close(sessionId, "user_close");
+			const file = SessionManager.findById(row.workspace, sessionId, userSessionsDir(userId));
+			if (file) rmSync(file, { force: true });
+			this.runtimes().remove(userId, sessionId);
+			this.runtimes().forgetActions(userId, sessionId);
+			this.runtimes().forgetSettings(userId, sessionId);
+			this.catalog().finishDelete(userId, sessionId);
+		} catch (error) {
+			this.catalog().failDelete(
+				userId,
+				sessionId,
+				error instanceof Error ? error.message : String(error),
+			);
+			throw error;
+		}
 	}
 
 	startJanitor(): void {
@@ -388,6 +533,8 @@ export class SessionRegistry {
 				const queue = queueSnapshot(ctx);
 				if (
 					!ctx.closing &&
+					!ctx.recovery?.issue &&
+					!ctx.recovery?.running &&
 					ctx.session.isIdle &&
 					!ctx.session.isBashRunning &&
 					(ctx.status === "idle" || ctx.status === "error") &&
@@ -404,12 +551,22 @@ export class SessionRegistry {
 	}
 
 	async recoverPersisted(users: Array<{ userId: string; username: string }>): Promise<void> {
+		for (const user of users) {
+			this.reconcileUser(user.userId);
+			for (const row of this.catalog().deleting(user.userId)) {
+				try {
+					await this.deleteSession(user.userId, row.sessionId, 0, true);
+				} catch (error) {
+					console.error("[delete recovery]", error);
+				}
+			}
+		}
 		for (const row of this.runtimes().list()) {
 			const user = users.find((item) => item.userId === row.userId);
 			if (!user) continue;
 			try {
 				const saved = this.runtimes().read(user.userId, row.sessionId)!;
-				const cwd = resolveWorkspaceB64(encodePath(saved.cwd));
+				const cwd = resolveWorkspaceB64(user.userId, encodePath(saved.cwd));
 				await this.create(user, cwd, row.sessionId);
 			} catch (error) {
 				console.error(`[recovery ${row.sessionId}]`, error);
@@ -423,13 +580,19 @@ export class SessionRegistry {
 		await Promise.allSettled(this.starting);
 		if (options?.preserveRunning) {
 			const contexts = [...this.map.values()];
-			for (const ctx of contexts) ctx.recovery?.suspend();
+			for (const ctx of contexts) {
+				ctx.closing = true;
+				ctx.ui?.dispose();
+				ctx.recovery?.suspend();
+			}
 			await Promise.all(contexts.map((ctx) => ctx.session.settingsManager.flush()));
 			this.map.clear();
 		} else
 			await Promise.all([...this.map.values()].map((ctx) => this.close(ctx.sessionId, "shutdown")));
 		this.runtimeStore?.close();
 		this.runtimeStore = undefined;
+		this.sessionCatalog?.close();
+		this.sessionCatalog = undefined;
 	}
 }
 

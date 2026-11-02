@@ -13,6 +13,7 @@ import { Elysia } from "elysia";
 import { AppError } from "@/core/app-error";
 import { env } from "@/env";
 import { requireCtx } from "@/modules/agent/agent.service";
+import { registry } from "@/modules/agent/session-registry";
 import { requireUser } from "@/modules/auth/auth.service";
 import { authContext } from "./auth.middleware";
 
@@ -28,6 +29,7 @@ export const sseRoutes = new Elysia()
 			throw new AppError("BAD_REQUEST", "事件游标不合法");
 		const encoder = new TextEncoder();
 		const sessionCtx = ctx; // 闭包捕获（TS 收窄）
+		const wrongEpoch = query.epoch !== undefined && query.epoch !== ctx.bus.epoch;
 
 		let cancelStream: () => void = () => {};
 		const stream = new ReadableStream<Uint8Array>({
@@ -62,6 +64,11 @@ export const sseRoutes = new Elysia()
 					}
 				};
 				cancelStream = cleanup;
+				if (wrongEpoch) {
+					send("error", { message: RESYNC_MESSAGE });
+					cleanup();
+					return;
+				}
 
 				// 1) 增量重放（Last-Event-ID / sinceSeq）
 				if (lastSeq > 0) {
@@ -96,6 +103,65 @@ export const sseRoutes = new Elysia()
 			},
 		});
 
+		return new Response(stream, {
+			headers: {
+				"content-type": "text/event-stream; charset=utf-8",
+				"cache-control": "no-cache",
+				connection: "keep-alive",
+				"x-accel-buffering": "no",
+			},
+		});
+	})
+	.get("/api/user/events", ({ query, headers, request, user }) => {
+		const u = requireUser(user);
+		const hub = registry.catalog().hub(u.userId);
+		const since = Number(headers["last-event-id"] ?? query.sinceSeq ?? 0);
+		if (!Number.isSafeInteger(since) || since < 0)
+			throw new AppError("BAD_REQUEST", "事件游标不合法");
+		let cleanup = () => {};
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				let closed = false;
+				let unsubscribe = () => {};
+				let timer: ReturnType<typeof setInterval> | undefined;
+				cleanup = () => {
+					if (closed) return;
+					closed = true;
+					if (timer) clearInterval(timer);
+					unsubscribe();
+					request.signal.removeEventListener("abort", cleanup);
+					try {
+						controller.close();
+					} catch {}
+				};
+				const send = (event: string, data: unknown, seq?: number) => {
+					if (closed) return;
+					try {
+						controller.enqueue(
+							new TextEncoder().encode(
+								`${seq !== undefined ? `id: ${seq}\n` : ""}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+							),
+						);
+					} catch {
+						cleanup();
+					}
+				};
+				const replay = hub.replay(String(query.epoch ?? ""), since);
+				if (!replay) {
+					send("resync", {});
+					cleanup();
+					return;
+				}
+				for (const item of replay) send(item.event, item, item.seq);
+				unsubscribe = hub.subscribe((item) => send(item.event, item, item.seq));
+				timer = setInterval(() => send("heartbeat", hub.cursor), env.sseHeartbeatSec * 1000);
+				request.signal.addEventListener("abort", cleanup, { once: true });
+				if (request.signal.aborted) cleanup();
+			},
+			cancel() {
+				cleanup();
+			},
+		});
 		return new Response(stream, {
 			headers: {
 				"content-type": "text/event-stream; charset=utf-8",

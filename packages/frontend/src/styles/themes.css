@@ -1,0 +1,103 @@
+@layer base {
+  :root {
+    color-scheme: light;
+    --button-face: var(--grey-100);
+    --button-ink: #fff;
+    --link: #1a7f37;
+    --link-hover: #2ea043;
+    --danger-text: #c53030;
+    --warning-text: #99600d;
+    --scroll-thumb: rgba(19, 17, 14, 0.18);
+    --scroll-thumb-hover: rgba(19, 17, 14, 0.32);
+  }
+
+  /* 参考 DeepSeek Harness 的白色画布、冷灰分层与蓝色强调。 */
+  :root[data-theme='light'] {
+    --background: 0 0% 100%;
+    --foreground: 220 17% 7%;
+    --card: 0 0% 100%;
+    --card-foreground: 220 17% 7%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 17% 7%;
+    --primary: 220 68% 48%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 210 17% 95%;
+    --secondary-foreground: 220 17% 7%;
+    --muted: 210 17% 96%;
+    --muted-foreground: 210 5% 40%;
+    --accent: 218 75% 96%;
+    --accent-foreground: 220 60% 38%;
+    --border: 215 15% 88%;
+    --input: 215 15% 83%;
+    --ring: 220 68% 48%;
+    --bg-deep: #f5f6f7;
+    --bg-base: #fff;
+    --bg-layer-01: #f1f3f5;
+    --bg-layer-02: #ebeef2;
+    --text-base: #0f1115;
+    --text-muted: #61666b;
+    --text-faint: #687078;
+    --icon-base: #353638;
+    --icon-muted: #61666b;
+    --border-muted: rgba(15, 17, 21, 0.08);
+    --border-base: rgba(15, 17, 21, 0.14);
+    --border-strong: rgba(15, 17, 21, 0.22);
+    --overlay-hover: rgba(15, 17, 21, 0.05);
+    --overlay-pressed: rgba(15, 17, 21, 0.1);
+    --button-face: #0f1115;
+    --button-ink: #fff;
+    --link: #255fc5;
+    --link-hover: #174a9f;
+    --alpha-dark-30: rgba(15, 17, 21, 0.08);
+    --alpha-light-16: rgba(15, 17, 21, 0.12);
+    --alpha-light-6: rgba(15, 17, 21, 0.06);
+  }
+
+  :root[data-theme='dark'] {
+    color-scheme: dark;
+    --background: 240 5% 9%;
+    --foreground: 210 17% 98%;
+    --card: 240 2% 14%;
+    --card-foreground: 210 17% 98%;
+    --popover: 240 2% 14%;
+    --popover-foreground: 210 17% 98%;
+    --primary: 218 100% 74%;
+    --primary-foreground: 220 45% 12%;
+    --secondary: 240 2% 18%;
+    --secondary-foreground: 210 17% 98%;
+    --muted: 240 2% 16%;
+    --muted-foreground: 210 8% 72%;
+    --accent: 220 28% 22%;
+    --accent-foreground: 218 100% 84%;
+    --destructive: 0 85% 70%;
+    --destructive-foreground: 0 0% 8%;
+    --border: 240 3% 24%;
+    --input: 240 3% 30%;
+    --ring: 218 100% 74%;
+    --bg-deep: #111113;
+    --bg-base: #151517;
+    --bg-layer-01: #232324;
+    --bg-layer-02: #2c2c2e;
+    --text-base: #f9fafb;
+    --text-muted: #cfd3d6;
+    --text-faint: #a2a7ae;
+    --icon-base: #ebedf0;
+    --icon-muted: #cfd3d6;
+    --border-muted: rgba(255, 255, 255, 0.09);
+    --border-base: rgba(255, 255, 255, 0.16);
+    --border-strong: rgba(255, 255, 255, 0.26);
+    --overlay-hover: rgba(255, 255, 255, 0.06);
+    --overlay-pressed: rgba(255, 255, 255, 0.1);
+    --button-face: #f9fafb;
+    --button-ink: #151517;
+    --link: #8bb6ff;
+    --link-hover: #b6d1ff;
+    --danger-text: #ff9595;
+    --warning-text: #edbc6b;
+    --scroll-thumb: rgba(255, 255, 255, 0.22);
+    --scroll-thumb-hover: rgba(255, 255, 255, 0.36);
+    --alpha-dark-30: rgba(0, 0, 0, 0.3);
+    --alpha-light-16: rgba(255, 255, 255, 0.16);
+    --alpha-light-6: rgba(255, 255, 255, 0.06);
+  }
+}

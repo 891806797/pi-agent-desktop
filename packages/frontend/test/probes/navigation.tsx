@@ -17,6 +17,11 @@ const useEffect = (fn: () => undefined | (() => void), deps: unknown[]) => {
 };
 const hooks = {
 	useEffect,
+	useRef: (initial: unknown) => {
+		const index = slot++;
+		if (!(index in slots)) slots[index] = { current: initial };
+		return slots[index];
+	},
 	useState: (initial: unknown) => {
 		const index = slot++;
 		if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial;
@@ -37,6 +42,7 @@ Object.defineProperty(globalThis, "location", { value: loc, configurable: true }
 Object.defineProperty(globalThis, "window", {
 	value: {
 		innerWidth: 1200,
+		location: loc,
 		addEventListener() {},
 		removeEventListener() {},
 	},
@@ -57,13 +63,20 @@ const projects: WorkspaceInfo[] = [
 	{ encoded: "b", name: "B", path: "/b" },
 ];
 const pending = new Map<string, (value: unknown) => void>();
+const realApi = await import("../../src/lib/api");
 mock.module("../../src/lib/api", () => ({
+	...realApi,
 	listWorkspaces: async () => ({ workspaces: projects }),
 	listSessions: (workspace: string) => new Promise((resolve) => pending.set(workspace, resolve)),
+	listCatalog: (query: { workspace: string; limit?: number }) =>
+		query.limit === 1
+			? Promise.resolve({ sessions: [{ sessionId: `${query.workspace}_FIRST` }] })
+			: new Promise((resolve) => pending.set(query.workspace, resolve)),
 	addWorkspace: async () => ({}),
 	logout: async () => ({}),
 }));
-mock.module("../../src/hooks/useChatAgent", () => ({ useChatAgent() {} }));
+const realChatAgent = await import("../../src/hooks/useChatAgent");
+mock.module("../../src/hooks/useChatAgent", () => ({ ...realChatAgent, useChatAgent() {} }));
 let agentWorkspace: unknown;
 mock.module("../../src/hooks/useChatAgentApi", () => ({
 	useChatAgentApi: (opts: { projectId: unknown }) => {
@@ -106,6 +119,9 @@ await tick();
 let tree = render(ChatPage);
 find(tree, "onSelect")!.onSelect!("a");
 expect(loc.search).toBe("?workspace=a&sessionId=A");
+find(tree, "onSelect")!.onSelect!("b");
+await tick();
+expect(loc.search).toBe("?workspace=b&sessionId=b_FIRST");
 loc.search = "?workspace=b&sessionId=B";
 tree = render(ChatPage);
 expect(agentWorkspace).toBe("b");
@@ -123,7 +139,9 @@ const { SidebarPanel } = await import("../../src/components/layout/SidebarPanel"
 const sidebar = (project: WorkspaceInfo) =>
 	SidebarPanel({ project, onOpenSession() {}, onNewSession() {} });
 render(() => sidebar(projects[0]));
+await new Promise((resolve) => setTimeout(resolve, 170));
 render(() => sidebar(projects[1]));
+await new Promise((resolve) => setTimeout(resolve, 170));
 pending.get("b")!({ sessions: [{ sessionId: "B", firstMessage: "B_ONLY", live: true }] });
 await tick();
 expect(JSON.stringify(render(() => sidebar(projects[1])))).toContain("B_ONLY");
