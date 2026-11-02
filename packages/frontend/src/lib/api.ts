@@ -281,3 +281,40 @@ export const commands = () =>
 export const getSettingsModels = () => sharedRead<{ models: unknown }>("/api/settings/models");
 export const putSettingsModels = (models: unknown) =>
 	request("/api/settings/models", { method: "PUT", body: JSON.stringify(models) });
+
+// 文件操作显式携带工作区，避免切换项目时使用 URL 中的新坐标。
+export const getFileContent = (dir: string, path: string) =>
+	request<import("@pi-agent/common").FileContentResponse>(
+		`/api/file?${new URLSearchParams({ dir, path })}`,
+	);
+export const saveFileContent = (dir: string, path: string, content: string, revision: string) =>
+	request<{ revision: string }>("/api/file", {
+		method: "PUT",
+		body: JSON.stringify({ dir, path, content, revision }),
+	});
+export const createFile = (dir: string, path: string) =>
+	request<{ path: string }>("/api/file", {
+		method: "POST",
+		body: JSON.stringify({ dir, path, kind: "file" }),
+	});
+export const createDir = (dir: string, path: string) =>
+	request<{ path: string }>("/api/file", {
+		method: "POST",
+		body: JSON.stringify({ dir, path, kind: "dir" }),
+	});
+export const deleteEntry = (dir: string, path: string) =>
+	request("/api/file", { method: "DELETE", body: JSON.stringify({ dir, path }) });
+export const moveEntry = (dir: string, from: string, to: string) =>
+	request<{ from: string; to: string }>("/api/file/move", {
+		method: "POST",
+		body: JSON.stringify({ dir, from, to }),
+	});
+export const uploadFiles = (
+	dir: string,
+	path: string,
+	files: Array<{ name: string; contentBase64: string }>,
+) =>
+	request<{ saved: string[] }>("/api/file/upload", {
+		method: "POST",
+		body: JSON.stringify({ dir, path, files }),
+	});

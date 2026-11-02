@@ -119,3 +119,8 @@ export type {
 	UiInputPayload,
 	UiSelectPayload,
 };
+
+export interface FileContentResponse {
+	content: string;
+	revision: string;
+}

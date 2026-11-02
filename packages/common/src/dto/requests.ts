@@ -176,3 +176,48 @@ export const ModelSettingsInput = z
 		visit(config, []);
 	});
 export type ModelSettingsInput = z.infer<typeof ModelSettingsInput>;
+
+// 工作区文件操作只接受可移植的相对路径，物理路径边界由后端再次校验。
+export const FilePath = z
+	.string()
+	.min(1)
+	.max(1000)
+	.refine(
+		(path) =>
+			path
+				.split("/")
+				.every(
+					(part) =>
+						part.length > 0 &&
+						part !== "." &&
+						part !== ".." &&
+						!/[\\<>:"|?*]/.test(part) &&
+						Array.from(part).every((char) => char.charCodeAt(0) >= 32) &&
+						!/[. ]$/.test(part) &&
+						!/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part),
+				),
+		"文件路径不合法",
+	);
+export const FileQuery = z.object({ dir: WORKSPACE_B64, path: FilePath });
+export const SaveFileInput = FileQuery.extend({
+	content: z.string().max(1_048_576),
+	revision: z.string().min(1),
+});
+export const CreateFileInput = FileQuery.extend({ kind: z.enum(["file", "dir"]) });
+export const MoveFileInput = z.object({ dir: WORKSPACE_B64, from: FilePath, to: FilePath });
+export const UploadFilesInput = z.object({
+	dir: WORKSPACE_B64,
+	path: z.union([z.literal(""), FilePath]),
+	files: z
+		.array(
+			z.object({
+				name: FilePath.refine((name) => !name.includes("/"), "文件名不能含目录"),
+				contentBase64: z
+					.string()
+					.max(1_398_104)
+					.regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/),
+			}),
+		)
+		.min(1)
+		.max(10),
+});

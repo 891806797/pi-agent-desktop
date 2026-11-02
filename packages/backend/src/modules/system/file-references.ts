@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { extname } from "node:path";
 import { AppError } from "@/core/app-error";
 import { insidePath } from "./paths";
@@ -30,7 +30,13 @@ export function expandFileReferences(
 			}
 			if (!existsSync(abs)) return full;
 			const stat = statSync(abs);
-			if (!stat.isFile()) throw new AppError("BAD_REQUEST", "文件引用不能指向目录");
+			if (stat.isDirectory()) {
+				const entries = readdirSync(abs, { withFileTypes: true })
+					.slice(0, 200)
+					.map((entry) => entry.name + (entry.isDirectory() ? "/" : ""));
+				return `${prefix}<directory name="${abs}">\n${entries.join("\n")}\n</directory>`;
+			}
+			if (!stat.isFile()) throw new AppError("BAD_REQUEST", "只能引用普通文件或目录");
 			if (stat.size > 10 * 1024 * 1024)
 				throw new AppError("BAD_REQUEST", "引用文件超过 10MB，请缩小文件后重试");
 			const ext = extname(abs).toLowerCase();

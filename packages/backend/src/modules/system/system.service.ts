@@ -14,7 +14,7 @@ const IGNORED_DIRS = new Set([
 	"target",
 	"bin",
 ]);
-const FILE_LIMIT = 500;
+const FILE_LIMIT = 2000;
 
 function workspaceInfo(path: string): WorkspaceInfo {
 	const normalized = normalizeWorkspace(path);
@@ -78,7 +78,8 @@ export function listFiles(userId: string, workspaceB64: string, query?: string):
 		}
 		for (const entry of entries) {
 			if (out.length >= FILE_LIMIT) return;
-			if (entry.name.startsWith(".") || IGNORED_DIRS.has(entry.name)) continue;
+			if (entry.name.startsWith(".") || IGNORED_DIRS.has(entry.name) || entry.isSymbolicLink())
+				continue;
 			const child = posix.join(rel, entry.name);
 			if (!q || child.toLowerCase().includes(q))
 				out.push({ path: child, name: entry.name, isDir: entry.isDirectory() });

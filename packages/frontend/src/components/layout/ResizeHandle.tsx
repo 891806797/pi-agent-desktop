@@ -7,6 +7,8 @@ export function ResizeHandle({
 	onResize,
 	onEnd,
 	defaultSize = 344,
+	side = "left",
+	label = "调整会话列表宽度",
 }: {
 	size: number;
 	min: number;
@@ -14,6 +16,8 @@ export function ResizeHandle({
 	onResize: (width: number) => void;
 	onEnd?: (width: number) => void;
 	defaultSize?: number;
+	side?: "left" | "right";
+	label?: string;
 }) {
 	const [active, setActive] = useState(false);
 	const drag = useRef<{ x: number; size: number; next: number; frame?: number } | null>(null);
@@ -44,7 +48,7 @@ export function ResizeHandle({
 		<div
 			role="separator"
 			tabIndex={0}
-			aria-label="调整会话列表宽度"
+			aria-label={label}
 			aria-orientation="vertical"
 			aria-valuemin={min}
 			aria-valuemax={max}
@@ -69,7 +73,9 @@ export function ResizeHandle({
 			onPointerMove={(event) => {
 				const current = drag.current;
 				if (!current) return;
-				current.next = clamp(current.size + event.clientX - current.x);
+				current.next = clamp(
+					current.size + (event.clientX - current.x) * (side === "right" ? -1 : 1),
+				);
 				if (current.frame) return;
 				current.frame = requestAnimationFrame(() => {
 					current.frame = undefined;
@@ -88,9 +94,9 @@ export function ResizeHandle({
 				const step = event.shiftKey ? 32 : 8;
 				const next =
 					event.key === "ArrowLeft"
-						? size - step
+						? size + (side === "right" ? step : -step)
 						: event.key === "ArrowRight"
-							? size + step
+							? size + (side === "right" ? -step : step)
 							: event.key === "Home"
 								? min
 								: event.key === "End"

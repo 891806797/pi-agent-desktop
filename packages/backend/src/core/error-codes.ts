@@ -9,6 +9,7 @@ export const ERROR_CODES = {
 	NOT_FOUND: { status: 404, message: "资源不存在" },
 	VALIDATION_FAILED: { status: 400, message: "参数校验失败" },
 	BAD_REQUEST: { status: 400, message: "请求不合法" },
+	FILE_CONFLICT: { status: 409, message: "文件已存在或内容已变更" },
 	SESSION_EXISTS: { status: 409, message: "会话已存在" },
 	SESSION_BUSY: { status: 409, message: "会话正忙" },
 	SESSION_DELETED: { status: 410, message: "会话已删除或正在删除" },

@@ -3,11 +3,12 @@
  */
 
 import type { WorkspaceInfo } from "@pi-agent/common";
-import { MenuIcon } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { MenuIcon, PanelRightIcon } from "lucide-react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { ChatMessageList } from "@/components/chat/ChatMessageList";
+import { FileTree } from "@/components/chat/FileTree";
 import { DirectoryPicker } from "@/components/layout/DirectoryPicker";
 import { ProjectRail } from "@/components/layout/ProjectRail";
 import { ResizeHandle } from "@/components/layout/ResizeHandle";
@@ -20,6 +21,12 @@ import { useChatAgentApi } from "@/hooks/useChatAgentApi";
 import { addWorkspace, deleteSession, listWorkspaces } from "@/lib/api";
 import { useChatStore } from "@/stores/chat";
 import { needsAttention, useSessionsStore } from "@/stores/sessions";
+
+const FileEditorDialog = lazy(() =>
+	import("@/components/chat/FileEditorDialog").then((module) => ({
+		default: module.FileEditorDialog,
+	})),
+);
 
 const DEFAULT_SIDE = 344;
 const MIN_SIDE = 280;
@@ -51,9 +58,29 @@ export function ChatPage() {
 		if (currentSid && removed[currentSid])
 			navigate(`/chat?workspace=${activeEncoded}`, { replace: true });
 	}, [currentSid, removed, activeEncoded, navigate]);
+	const [editingFile, setEditingFile] = useState<{ projectId: string; path: string } | null>(null);
+	const editFile = (path: string) => {
+		if (activeEncoded) setEditingFile({ projectId: activeEncoded, path });
+	};
+	const [filesOpen, setFilesOpen] = useState(
+		() => localStorage.getItem("pi-agent:files-open") !== "false",
+	);
+	const [filesMobileOpen, setFilesMobileOpen] = useState(false);
+	const [viewport, setViewport] = useState(window.innerWidth);
+	const [fileWidth, setFileWidth] = useState(() => {
+		const value = Number(localStorage.getItem("pi-agent:files-width"));
+		return Number.isFinite(value) && value >= 240 ? Math.min(value, 520) : 288;
+	});
+	const showFileSidebar = filesOpen && viewport >= 1100 && !!activeEncoded;
+	const maxFileWidth = Math.max(240, Math.min(520, viewport - 448 - MIN_SIDE));
+	const effectiveFileWidth = Math.min(fileWidth, maxFileWidth);
 	const [side, setSide] = useState(loadSide);
 	const [maxSide, setMaxSide] = useState(sidebarMax);
-	const sidebarWidth = Math.min(side, maxSide);
+	const sidebarWidth = Math.min(
+		side,
+		maxSide,
+		showFileSidebar ? Math.max(MIN_SIDE, viewport - effectiveFileWidth - 448) : maxSide,
+	);
 	const [addOpen, setAddOpen] = useState(false);
 	const [navigationOpen, setNavigationOpen] = useState(false);
 
@@ -77,6 +104,8 @@ export function ChatPage() {
 	useEffect(() => {
 		const onResize = () => {
 			setMaxSide(sidebarMax());
+			setViewport(window.innerWidth);
+			if (window.innerWidth >= 1100) setFilesMobileOpen(false);
 			if (window.innerWidth >= 768) setNavigationOpen(false);
 		};
 		window.addEventListener("resize", onResize);
@@ -90,6 +119,11 @@ export function ChatPage() {
 		localStorage.setItem("pi-agent:sidebar-width", String(width));
 	}, []);
 
+	useEffect(() => {
+		const close = () => setFilesMobileOpen(false);
+		window.addEventListener("composer:insert", close);
+		return () => window.removeEventListener("composer:insert", close);
+	}, []);
 	const activeProject = projects.find((p) => p.encoded === activeEncoded) ?? null;
 	const agent = useChatAgentApi({ projectId: activeEncoded });
 
@@ -195,6 +229,23 @@ export function ChatPage() {
 					</span>
 				)}
 				<SessionMetricsBar metrics={metrics} />
+				<Button
+					size="sm"
+					variant="ghost"
+					aria-label="文件面板"
+					aria-expanded={viewport >= 1100 ? filesOpen : filesMobileOpen}
+					disabled={!activeEncoded}
+					onClick={() => {
+						if (viewport < 1100) setFilesMobileOpen(true);
+						else {
+							setFilesOpen(!filesOpen);
+							localStorage.setItem("pi-agent:files-open", String(!filesOpen));
+						}
+					}}
+				>
+					<PanelRightIcon className="size-4" />
+					<span className="hidden sm:inline">文件</span>
+				</Button>
 				<Button type="button" size="sm" variant="ghost" onClick={() => setAttentionOpen(true)}>
 					待处理 {attention.length || ""}
 				</Button>
@@ -234,7 +285,51 @@ export function ChatPage() {
 						</div>
 					)}
 				</main>
+				{showFileSidebar && (
+					<>
+						<ResizeHandle
+							size={effectiveFileWidth}
+							min={240}
+							max={maxFileWidth}
+							defaultSize={288}
+							side="right"
+							label="调整文件面板宽度"
+							onResize={setFileWidth}
+							onEnd={(width) => localStorage.setItem("pi-agent:files-width", String(width))}
+						/>
+						<aside
+							aria-label="项目文件"
+							className="h-full shrink-0 overflow-hidden border-l border-t border-[var(--border-muted)] bg-[var(--bg-layer-01)]"
+							style={{ width: effectiveFileWidth }}
+						>
+							<FileTree key={activeEncoded} projectId={activeEncoded} onEdit={editFile} />
+						</aside>
+					</>
+				)}
+				<Dialog open={filesMobileOpen} onOpenChange={setFilesMobileOpen}>
+					<DialogContent
+						className="flex h-[85dvh] flex-col sm:max-w-md"
+						aria-describedby={undefined}
+					>
+						<DialogTitle>项目文件</DialogTitle>
+						<div className="min-h-0 flex-1">
+							<FileTree key={activeEncoded} projectId={activeEncoded} onEdit={editFile} />
+						</div>
+					</DialogContent>
+				</Dialog>
 			</div>
+			{editingFile && (
+				<Suspense fallback={<p role="status">加载编辑器…</p>}>
+					<FileEditorDialog
+						open
+						projectId={editingFile.projectId}
+						path={editingFile.path}
+						onOpenChange={(open) => {
+							if (!open) setEditingFile(null);
+						}}
+					/>
+				</Suspense>
+			)}
 			<DirectoryPicker
 				open={addOpen}
 				onClose={() => setAddOpen(false)}
