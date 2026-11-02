@@ -10,7 +10,9 @@ import { join, relative, resolve } from "node:path";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import {
 	createAgentSession,
+	createBashToolDefinition,
 	DefaultResourceLoader,
+	type ExtensionAPI,
 	ModelRuntime,
 	SessionManager,
 	SettingsManager,
@@ -18,6 +20,7 @@ import {
 import type { AgentStatus, SessionCloseReason, SessionSummary } from "@pi-agent/common";
 import { AppError } from "@/core/app-error";
 import { env } from "@/env";
+import { desktopShellHost } from "@/modules/system/desktop-shell";
 import { encodePath, userAgentDir, userSessionsDir } from "@/modules/system/paths";
 import { resolveWorkspaceB64 } from "@/modules/system/workspace-registry";
 import { ApprovalManager } from "./approval-manager";
@@ -34,6 +37,23 @@ import { readSessionMetrics } from "./session-metrics";
 import { SessionRecovery } from "./session-recovery";
 import { SessionUI } from "./session-ui";
 import { makeWebUIContext } from "./ui-context";
+
+function desktopShellExtensions(cwd: string, settings: SettingsManager) {
+	const host = desktopShellHost;
+	if (!host) return [];
+	return [
+		(pi: ExtensionAPI) => {
+			const operations = host.operations(settings.getShellPath());
+			pi.registerTool(
+				createBashToolDefinition(cwd, {
+					operations,
+					commandPrefix: settings.getShellCommandPrefix(),
+				}),
+			);
+			pi.on("user_bash", () => ({ operations }));
+		},
+	];
+}
 
 export interface SessionContext {
 	sessionId: string;
@@ -207,6 +227,7 @@ export class SessionRegistry {
 				makeRunModeGateExt(runMode, approvals),
 				makeAskQuestionExt(approvals),
 				makeModelConfigGateExt(user.userId),
+				...desktopShellExtensions(cwd, settingsManager),
 			],
 			settingsManager,
 			noExtensions: true,

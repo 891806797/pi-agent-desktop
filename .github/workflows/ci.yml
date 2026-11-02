@@ -1,8 +1,6 @@
 name: Desktop CI
 on:
-  pull_request:
-  push:
-    branches: [master]
+  workflow_dispatch:
   workflow_call:
     inputs:
       ref:
@@ -135,10 +133,10 @@ jobs:
         with:
           name: desktop-${{ matrix.target }}
           if-no-files-found: error
+          retention-days: 1
           path: |
             packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
             packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
             packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
             packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.deb
             packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
-

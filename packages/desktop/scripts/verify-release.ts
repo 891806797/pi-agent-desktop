@@ -120,13 +120,28 @@ if (import.meta.main) {
 			);
 			if (process.platform === "darwin") source = root;
 			else {
+				const sevenZip = process.platform === "win32" ? Bun.which("7z") : null;
 				const installer = files(root).find((p) =>
-					process.platform === "win32" ? p.endsWith(".exe") : p.endsWith(".deb"),
+					process.platform === "win32"
+						? p.endsWith(sevenZip ? ".exe" : ".msi")
+						: p.endsWith(".deb"),
 				);
 				if (!installer) throw new Error(`Missing installer in ${root}`);
 				extracted = mkdtempSync(join(tmpdir(), "pi-installer-"));
 				source = extracted;
-				if (process.platform === "win32") await run(["7z", "x", installer, `-o${extracted}`, "-y"]);
+				if (process.platform === "win32" && sevenZip)
+					await run([sevenZip, "x", installer, `-o${extracted}`, "-y"]);
+				else if (process.platform === "win32")
+					// Administrative extraction creates a source layout without installing the app.
+					await run([
+						"msiexec.exe",
+						"/a",
+						installer,
+						"/qn",
+						`TARGETDIR=${extracted}`,
+						"/L*v",
+						join(extracted, "extract.log"),
+					]);
 				else await run(["dpkg-deb", "-x", installer, extracted]);
 			}
 		}

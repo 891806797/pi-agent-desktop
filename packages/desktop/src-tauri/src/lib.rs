@@ -70,6 +70,7 @@ fn credential() -> Result<keyring::Entry, String> {
 fn client() -> (reqwest::Client, Arc<reqwest::cookie::Jar>) {
     let jar = Arc::new(reqwest::cookie::Jar::default());
     let client = reqwest::Client::builder()
+        .no_proxy()
         .cookie_provider(jar.clone())
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(5))
@@ -289,32 +290,32 @@ async fn start(app: tauri::AppHandle, host: Arc<Host>) -> Result<(), String> {
     }
     let result = async {
         let data = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-        let mut resources = app.path().resource_dir().map_err(|e| e.to_string())?;
+        let resources = app.path().resource_dir().map_err(|e| e.to_string())?;
         #[cfg(debug_assertions)]
-        {
-            if !resources.join("photon_rs_bg.wasm").exists() {
-                resources = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources");
-            }
-        }
+        let resources = if resources.join("photon_rs_bg.wasm").exists() {
+            resources
+        } else {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources")
+        };
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let filename = if cfg!(windows) {
             "pi-agent-sidecar.exe"
         } else {
             "pi-agent-sidecar"
         };
-        let mut sidecar = exe.parent().ok_or("应用目录不可用")?.join(filename);
+        let sidecar = exe.parent().ok_or("应用目录不可用")?.join(filename);
         #[cfg(debug_assertions)]
-        {
-            if !sidecar.exists() {
-                let triple = include_str!(concat!(env!("OUT_DIR"), "/target.txt")).trim();
-                sidecar = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("binaries")
-                    .join(format!(
-                        "pi-agent-sidecar-{triple}{}",
-                        if cfg!(windows) { ".exe" } else { "" }
-                    ));
-            }
-        }
+        let sidecar = if sidecar.exists() {
+            sidecar
+        } else {
+            let triple = include_str!(concat!(env!("OUT_DIR"), "/target.txt")).trim();
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("binaries")
+                .join(format!(
+                    "pi-agent-sidecar-{triple}{}",
+                    if cfg!(windows) { ".exe" } else { "" }
+                ))
+        };
         sidecar::Sidecar::spawn(&sidecar, &data, &resources, &host.quitting).await
     }
     .await;
@@ -730,11 +731,17 @@ pub fn run() {
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let host = window.state::<Arc<Host>>();
-                if host.reachable.load(Ordering::SeqCst) && !host.quitting.load(Ordering::SeqCst) {
+                if !host.quitting.load(Ordering::SeqCst) {
                     api.prevent_close();
                     publish_visibility(window.app_handle(), false);
-                    #[cfg(any(target_os = "windows", target_os = "macos"))]
+                    #[cfg(target_os = "macos")]
                     let _ = window.hide();
+                    #[cfg(target_os = "windows")]
+                    if host.reachable.load(Ordering::SeqCst) {
+                        let _ = window.hide();
+                    } else {
+                        let _ = window.minimize();
+                    }
                     // Some Linux desktops create a tray object without showing an indicator.
                     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
                     let _ = window.minimize();
@@ -805,5 +812,108 @@ mod icon_tests {
         );
         let badge = (26 * 32 + 26) * 4;
         assert_eq!(&completed.rgba()[badge..badge + 4], &[34, 197, 94, 255]);
+    }
+}
+
+#[cfg(test)]
+mod proxy_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    #[tokio::test]
+    #[ignore]
+    async fn localhost_proxy_helper() {
+        let url = std::env::var("PI_PROXY_TEST_URL").unwrap();
+        let (client, jar) = client();
+        jar.add_cookie_str("auth_session=fixture", &reqwest::Url::parse(&url).unwrap());
+        let response = transport::forward(
+            &client,
+            &url,
+            "test-owned-token",
+            &Request {
+                path: "/api/auth/login".into(),
+                method: "POST".into(),
+                headers: None,
+                body: Some(r#"{"username":"test","password":"fixture"}"#.into()),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(response.status().is_success());
+    }
+    async fn server(listener: tokio::net::TcpListener) -> bool {
+        let Ok(Ok((mut stream, _))) =
+            tokio::time::timeout(Duration::from_secs(3), listener.accept()).await
+        else {
+            return false;
+        };
+        let mut bytes = Vec::new();
+        loop {
+            let mut chunk = [0u8; 1024];
+            let n = stream.read(&mut chunk).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&chunk[..n]);
+            if let Some(end) = bytes.windows(4).position(|b| b == b"\r\n\r\n") {
+                let header = String::from_utf8_lossy(&bytes[..end]);
+                let size = header
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length: ")
+                            .and_then(|n| n.parse::<usize>().ok())
+                    })
+                    .unwrap_or(0);
+                if bytes.len() >= end + 4 + size {
+                    break;
+                }
+            }
+        }
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+            .await
+            .unwrap();
+        true
+    }
+    #[tokio::test]
+    async fn localhost_secrets_never_use_environment_proxy() {
+        let origin = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = format!("http://{}", origin.local_addr().unwrap());
+        let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
+        let origin_task = tokio::spawn(server(origin));
+        let proxy_task = tokio::spawn(server(proxy));
+        let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--ignored",
+                "--exact",
+                "proxy_tests::localhost_proxy_helper",
+            ])
+            .env("PI_PROXY_TEST_URL", target)
+            .env("HTTP_PROXY", &proxy_url)
+            .env("http_proxy", &proxy_url)
+            .env("HTTPS_PROXY", &proxy_url)
+            .env("https_proxy", &proxy_url)
+            .env("ALL_PROXY", &proxy_url)
+            .env("all_proxy", &proxy_url)
+            .env("NO_PROXY", "")
+            .env("no_proxy", "")
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        command.creation_flags(0x08000000);
+        let mut child = command.spawn().unwrap();
+        assert!(tokio::time::timeout(Duration::from_secs(10), child.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success());
+        let origin_used = origin_task.await.unwrap();
+        let proxy_used = proxy_task.await.unwrap();
+        assert!(
+            origin_used,
+            "loopback request failed to reach owned origin directly"
+        );
+        assert!(!proxy_used, "local credentials reached environment proxy");
     }
 }

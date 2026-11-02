@@ -7,6 +7,8 @@
 **Tech Stack:** 最新稳定 Tauri 2、Rust、Bun、React、GitHub Actions。
 **Spec:** docs/superpowers/specs/2026-11-02-tauri-desktop-design.md
 
+**用户后续约束（2026-11-03）：** 不产生额外费用；停止自动 CI/CD。Actions 仅保留手动入口，仓库 Desktop CI 已停用，当前走本地构建。macOS 未实测不得声称通过，不为打包开通付费服务或增加预算。
+
 ## Global Constraints
 - 保留 Pi 1.5 原生接口、三包业务职责，增加 packages/desktop；无旧版兼容。
 - 新 JS 依赖只用 Bun @latest 安装，Rust 使用 cargo add 解析最新稳定版；CI 锁定 bun.lock/Cargo.lock。
@@ -30,9 +32,9 @@
 Files: backend/src/index.ts, env.ts, modules/system/desktop-host.ts, routes/desktop.middleware.ts, modules/auth/token.ts, users.ts, backend/test/desktop-host.test.ts, probes/desktop-host.ts.
 Consumes: PI_DESKTOP_TOKEN、DATA_DIR、控制管道。
 Produces: 受保护的既有 API、ready/退出协议、SQLite 持久化 JWT 密钥；Web 启动日志不变。
-- [ ] 写并实际运行失败测试：ready、拒绝错误连接、无开发 seed、EOF/shutdown 退出、JWT 重启稳定且无 cwd .env 写入。
-- [ ] 以现有启动入口闭环实现，token 校验用标准 crypto timingSafeEqual；关闭幂等并有上限。
-- [ ] 跑 focused tests 及受影响 auth/restart 集成测试，审查后标记完成。
+- [x] 写并实际运行失败测试：ready、拒绝错误连接、无开发 seed、EOF/shutdown 退出、JWT 重启稳定且无 cwd .env 写入。
+- [x] 以现有启动入口闭环实现，token 校验用标准 crypto timingSafeEqual；关闭幂等并有上限。
+- [x] 跑 focused tests 及受影响 auth/restart 集成测试，审查后标记完成。
 
 ### Task 2: Tauri Rust 宿主与提醒
 Files: packages/desktop/package.json, src-tauri/Cargo.toml/build.rs/tauri.conf.json/capabilities, src/{lib,sidecar,transport,attention}.rs, icons。
@@ -48,19 +50,19 @@ Produces: Global Constraints 的 IPC，桌面单实例/后台入口/完整退出
 Files: frontend/src/lib/desktop.ts, api.ts, shared-event-source.ts, main.tsx, App.tsx, frontend/test/desktop-transport.test.ts.
 Consumes: Task2 IPC/Channel；现有 APIResult 和 EventSourceTransport。
 Produces: 同一页面在 Web/desktop 的 HTTP 与事件传输，启动失败可重试，通知定位。
-- [ ] 先确认失败：状态等待/失败、HTTP 状态保留、关闭前异步订阅竞态、SSE error/resync、旧 Channel 回调失效。
-- [ ] 只在两个公共传输入口选环境；复用现有页面和 seq/epoch，不逐个路由分叉。
-- [ ] 桌面启动/崩溃状态可视反馈，使用既有控件和主题，通知定位不重复请求。
-- [ ] 前端单测/类型/lint/构建和既有浏览器验收通过，审查后完成。
+- [x] 先确认失败：状态等待/失败、HTTP 状态保留、关闭前异步订阅竞态、SSE error/resync、旧 Channel 回调失效。
+- [x] 只在两个公共传输入口选环境；复用现有页面和 seq/epoch，不逐个路由分叉。
+- [x] 桌面启动/崩溃状态可视反馈，使用既有控件和主题，通知定位不重复请求。
+- [x] 前端单测/类型/lint/构建和既有浏览器验收通过，审查后完成。
 
 ### Task 4: 三端构建与 GitHub Release
 Files: desktop/scripts/{prepare,verify-release}.ts, root package scripts, backend/scripts/build.ts, .github/workflows/{ci,release}.yml, docs/desktop.md, .gitignore.
 Consumes: src-tauri 工程与 backend/src/index.ts；sidecar 名称 pi-agent-sidecar-<Rust target>[.exe]。
 Produces: bun run desktop:prepare / desktop:dev / desktop:build，四目标安装包与 SHA256 Release。
-- [ ] 先确认 target 映射/版本一致性/缺失资源检查失败，修正现有 process.arch 宿主判断。
-- [ ] 脚本只使用 bun、路径标准库；桌面 sidecar 不重复内嵌前端，内嵌同一 Drizzle 迁移，打包所需 WASM/worker；禁用自动读取开发 .env/bunfig。
-- [ ] CI PR 只读、测试不使用真实密钥；发布按 tag 固定版本，所有目标成功才统一发布，失败可幂等重跑。
-- [ ] 无证书使用明确预发布，签名 secret 仅发布阶段；README 说明安装、原生依赖及已验证边界。
+- [x] 先确认 target 映射/版本一致性/缺失资源检查失败，修正现有 process.arch 宿主判断。
+- [x] 脚本只使用 bun、路径标准库；桌面 sidecar 不重复内嵌前端，内嵌同一 Drizzle 迁移，打包所需 WASM/worker；禁用自动读取开发 .env/bunfig。
+- [x] CI PR 只读、测试不使用真实密钥；发布按 tag 固定版本，所有目标成功才统一发布，失败可幂等重跑。
+- [x] 无证书使用明确预发布，签名 secret 仅发布阶段；README 说明安装、原生依赖及已验证边界。
 
 ### Task 5: 集成验收与最终审查
 - [ ] Typecheck/lint/backend/frontend/Rust 检查和生产构建；原 Web 浏览器完整验收。

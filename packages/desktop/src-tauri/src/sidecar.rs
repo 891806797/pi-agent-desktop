@@ -156,18 +156,18 @@ impl Sidecar {
         }
         let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
         loop {
-            tokio::select! { _=self.child.wait()=>break, _=tokio::time::sleep_until(deadline)=>{let _=self.child.kill().await;break;}, _=tokio::time::sleep(Duration::from_millis(100))=>self._tree.snapshot() }
+            tokio::select! { _=self.child.wait()=>break, _=tokio::time::sleep_until(deadline)=>break, _=tokio::time::sleep(Duration::from_millis(100))=>self._tree.snapshot() }
         }
         self._tree.snapshot();
         self._tree.terminate();
+        let _ = self.child.kill().await;
         let _ = self.child.wait().await;
     }
 }
 async fn cleanup(child: &mut Child, tree: &mut ProcessTree) {
     tree.snapshot();
-    let _ = child.start_kill();
-    tree.snapshot();
     tree.terminate();
+    let _ = child.kill().await;
     let _ = child.wait().await;
 }
 #[cfg(windows)]
@@ -355,6 +355,14 @@ impl ProcessTree {
         {
             if let Some(process) = system.process(pid) {
                 if process.start_time() == start {
+                    if let Ok(raw) = i32::try_from(pid.as_u32()) {
+                        // A live, verified group leader prevents its PGID from being reused.
+                        if raw > 1 && unsafe { libc::getpgid(raw) } == raw {
+                            unsafe {
+                                libc::kill(-raw, libc::SIGKILL);
+                            }
+                        }
+                    }
                     let _ = process.kill_with(sysinfo::Signal::Kill);
                 }
             }
@@ -594,13 +602,16 @@ fn main(){
 }
 "#;
     fn fixture(mode: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        fixture_source(mode, FIXTURE)
+    }
+    fn fixture_source(mode: &str, source_code: &str) -> (std::path::PathBuf, std::path::PathBuf) {
         let root = std::env::temp_dir().join(format!("pi-unix-tree-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let source = root.join("fake.rs");
         let exe = root.join("fake");
         std::fs::write(
             &source,
-            FIXTURE.replace("@VERSION@", env!("CARGO_PKG_VERSION")),
+            source_code.replace("@VERSION@", env!("CARGO_PKG_VERSION")),
         )
         .unwrap();
         std::fs::write(root.join("mode"), mode).unwrap();
@@ -717,5 +728,67 @@ fn main(){
             }
             std::fs::remove_dir_all(root).unwrap();
         }
+    }
+
+    const ORPHAN_FIXTURE: &str = r#"
+use std::{process::{Command,Stdio},io::Write,time::Duration,os::unix::process::CommandExt};
+fn record(data:&std::path::Path,pid:u32){let mut file=std::fs::OpenOptions::new().create(true).append(true).open(data.join("pids.txt")).unwrap();writeln!(file,"{pid}").unwrap();}
+fn main(){let data=std::path::PathBuf::from(std::env::var("DATA_DIR").unwrap());let mode=std::env::args().nth(1).unwrap_or_default();
+ if mode=="shell" {let child=Command::new("/bin/sleep").arg("90").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();record(&data,child.id());std::fs::write(data.join("orphan.txt"),child.id().to_string()).unwrap();return;}
+ if mode=="group" {let mut shell=Command::new(std::env::current_exe().unwrap()).arg("shell").spawn().unwrap();shell.wait().unwrap();std::fs::write(data.join("leader.txt"),std::process::id().to_string()).unwrap();record(&data,std::process::id());std::thread::sleep(Duration::from_secs(90));return;}
+ let mut _leader=Command::new(std::env::current_exe().unwrap()).arg("group").process_group(0).spawn().unwrap();record(&data,std::process::id());std::thread::sleep(Duration::from_secs(90));}
+"#;
+    #[tokio::test]
+    async fn forced_tree_cleanup_kills_reparented_background_group_members() {
+        let (root, exe) = fixture_source("orphan-group", ORPHAN_FIXTURE);
+        let mut child = Command::new(exe)
+            .env("DATA_DIR", &root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut tree = ProcessTree::attach(&child).unwrap();
+        let ids = identities(&root).await;
+        let orphan = sysinfo::Pid::from_u32(
+            std::fs::read_to_string(root.join("orphan.txt"))
+                .unwrap()
+                .parse()
+                .unwrap(),
+        );
+        let leader = sysinfo::Pid::from_u32(
+            std::fs::read_to_string(root.join("leader.txt"))
+                .unwrap()
+                .parse()
+                .unwrap(),
+        );
+        let system = sysinfo::System::new_all().unwrap();
+        let process = system.process(orphan).unwrap();
+        assert_ne!(process.parent(), Some(leader));
+        assert_ne!(process.parent(), child.id().map(sysinfo::Pid::from_u32));
+        struct Cleanup(sysinfo::Pid, u64);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                if let Ok(system) = sysinfo::System::new_all() {
+                    if let Some(process) = system.process(self.0) {
+                        if process.start_time() == self.1 {
+                            let _ = process.kill_with(sysinfo::Signal::Kill);
+                        }
+                    }
+                }
+            }
+        }
+        let _cleanup = Cleanup(orphan, process.start_time());
+        tree.snapshot();
+        assert!(
+            !tree.descendants.iter().any(|(pid, _)| *pid == orphan),
+            "fixture must be outside the backend parent tree"
+        );
+        tree.terminate();
+        child.wait().await.unwrap();
+        assert_gone(&ids).await;
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -1,7 +1,5 @@
 name: Desktop release
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
@@ -76,5 +74,3 @@ jobs:
           fi
           gh release upload "$RELEASE_TAG" assets/* --clobber
           gh release edit "$RELEASE_TAG" --draft=false --prerelease --notes-file notes.md
-
-

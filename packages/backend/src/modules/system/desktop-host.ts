@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { createInterface } from "node:readline";
 import { env } from "@/env";
 import rootPackage from "../../../../../package.json";
+import { desktopShellHost } from "./desktop-shell";
 
 declare const APP_VERSION: string;
 export const appVersion = typeof APP_VERSION === "string" ? APP_VERSION : rootPackage.version;
@@ -23,6 +24,7 @@ export function installHostShutdown(stop: () => Promise<void>, stopServer: () =>
 		work ??= (async () => {
 			const deadline = setTimeout(() => {
 				console.error("[pi-agent] shutdown timed out");
+				void desktopShellHost?.stop();
 				stopServer();
 				process.exit(1);
 			}, 5000);
@@ -35,6 +37,7 @@ export function installHostShutdown(stop: () => Promise<void>, stopServer: () =>
 				console.error("[pi-agent] shutdown failed");
 				exitCode = 1;
 			} finally {
+				await desktopShellHost?.stop();
 				clearTimeout(deadline);
 				process.exit(exitCode);
 			}
